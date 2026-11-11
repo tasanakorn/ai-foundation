@@ -24,11 +24,13 @@
 | `gateway/`  | Gateway binary `aif`         | Go module           |
 | `web/`      | Admin UI                     | Nuxt 4 + Nuxt UI    |
 | `scripts/`  | Dev loop (`dev.py`)          | Python (stdlib)     |
+| `deploy/`   | `local/compose.yaml`: Postgres + NATS for dev | Docker Compose |
 | `docs/`     | Product, specs, tasks        | Markdown            |
 
 1. Each part is self-contained in its own folder (own `go.mod` / `package.json`). The repo root holds no Go or JS files.
 2. Future extensions get their own top-level folder each (for example `extensions/<name>/`).
-3. `make dev` runs the gateway (rebuild on save), the Nuxt dev server (HMR, proxies `/admin/v1`), and optionally `llama-server`.
+3. `make dev` runs the gateway (rebuild on save), the Nuxt dev server (HMR, proxies `/admin/v1`), and optionally `llama-server`. `make dev-all` also starts Postgres + NATS in Docker.
+4. App processes run natively for a fast loop; only backing services run in containers. Local config comes from the repo-root `.env` (template: `.env.example`).
 
 ## 2. Architecture
 

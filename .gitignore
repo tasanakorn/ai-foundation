@@ -14,3 +14,6 @@
 /web/.nuxt/
 /web/.output/
 /web/dist
+
+# python
+__pycache__/

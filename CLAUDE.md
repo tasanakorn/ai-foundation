@@ -44,7 +44,9 @@ Guidance for Claude Code in this repository.
    | `gateway/`  | Go gateway `aif`  | `make -C gateway vet test`            |
    | `web/`      | Nuxt admin UI     | `cd web && pnpm typecheck`            |
    | `scripts/`  | Dev tooling       | Python, stdlib only                   |
+   | `deploy/`   | Compose / deploy  | `docker compose -f deploy/local/compose.yaml config` |
 
 2. New parts (extensions, SDKs) get a new top-level folder, for example `extensions/<name>/`.
 3. Architecture and decisions: `docs/specs/spec-0001-gateway-core-architecture.md`. Admin API shapes are mirrored in `web/app/types/admin.ts`; change both together.
 4. Preferred backing services: PostgreSQL and NATS. SQLite stays the zero-setup default.
+5. Local env: new settings go in `.env.example` (with a comment) and are read from the repo-root `.env`. Never commit `.env`.

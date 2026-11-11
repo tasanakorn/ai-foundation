@@ -5,11 +5,12 @@ Runs, with prefixed output:
            A failed build keeps the last good process running.
   web      Nuxt dev server (own hot reload). Proxies /admin/v1 to the gateway.
   llama    llama-server, only if LLAMA_MODEL (path to .gguf) or LLAMA_HF (HF repo) is set.
+  services With --services: Postgres + NATS via deploy/local/compose.yaml (left running on exit).
 
 Environment: read from the shell, then from .env at the repo root (shell wins).
 
 Usage:
-  python scripts/dev.py [--no-web] [--no-llama]
+  python scripts/dev.py [--services] [--no-web] [--no-llama]
 """
 
 import argparse
@@ -25,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 GATEWAY = ROOT / "gateway"
 WEB = ROOT / "web"
 DEV = ROOT / ".dev"
+COMPOSE = ROOT / "deploy" / "local" / "compose.yaml"
 
 COLORS = {"dev": "32", "gateway": "36", "web": "35", "llama": "33"}
 print_lock = threading.Lock()
@@ -37,16 +39,37 @@ def log(name: str, text: str) -> None:
         sys.stdout.flush()
 
 
+def parse_dotenv(text: str) -> dict[str, str]:
+    """Minimal .env parser, same rules as docker compose for the common cases:
+    KEY=value, optional `export`, quoted values, and ` # comment` after unquoted values."""
+    out = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        v = v.strip()
+        if v.startswith("#"):  # "KEY=   # comment" means an empty value
+            v = ""
+        elif v[:1] in ("'", '"') and v[0] in v[1:]:
+            v = v[1:v.index(v[0], 1)]
+        else:
+            for sep in (" #", "\t#"):
+                if sep in v:
+                    v = v[:v.index(sep)]
+            v = v.strip()
+        out[k.strip()] = v
+    return out
+
+
 def load_env() -> dict[str, str]:
     env = dict(os.environ)
     dotenv = ROOT / ".env"
     if dotenv.exists():
-        for raw in dotenv.read_text().splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            env.setdefault(k.strip(), v.strip().strip("'\""))
+        for k, v in parse_dotenv(dotenv.read_text()).items():
+            env.setdefault(k, v)
     env.setdefault("AIF_MASTER_KEY", "dev-master-key-0000")
     env.setdefault("AIF_DB", str(DEV / "aif.db"))
     return env
@@ -94,6 +117,25 @@ def gateway_snapshot() -> dict[Path, int]:
     return out
 
 
+def compose_cmd(*args: str) -> list[str]:
+    cmd = ["docker", "compose", "-f", str(COMPOSE)]
+    if (ROOT / ".env").exists():
+        cmd += ["--env-file", str(ROOT / ".env")]
+    return cmd + list(args)
+
+
+def start_services(env: dict[str, str]) -> bool:
+    log("dev", "starting Postgres + NATS (docker compose up --wait)...")
+    r = subprocess.run(compose_cmd("up", "-d", "--wait"), env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        log("dev", "services failed to start:\n" + (r.stderr or r.stdout))
+        return False
+    log("dev", f"postgres    {env.get('DATABASE_URL', 'postgres://aif:aif-dev@127.0.0.1:5432/aif')}")
+    log("dev", f"nats        {env.get('NATS_URL', 'nats://127.0.0.1:4222')}"
+               f"  (monitor http://127.0.0.1:{env.get('NATS_MONITOR_PORT', '8222')})")
+    return True
+
+
 def build_gateway(env: dict[str, str]) -> bool:
     t0 = time.monotonic()
     r = subprocess.run(
@@ -111,11 +153,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-web", action="store_true", help="do not start the Nuxt dev server")
     ap.add_argument("--no-llama", action="store_true", help="do not start llama-server")
+    ap.add_argument("--services", action="store_true", help="also start Postgres + NATS with docker compose")
     args = ap.parse_args()
 
     DEV.mkdir(exist_ok=True)
     env = load_env()
     procs: list[Proc] = []
+
+    if args.services and not start_services(env):
+        return 1
 
     # llama-server (optional)
     if not args.no_llama and (env.get("LLAMA_MODEL") or env.get("LLAMA_HF")):
@@ -170,6 +216,8 @@ def main() -> int:
     log("dev", "stopping...")
     for p in reversed(procs):
         p.stop()
+    if args.services:
+        log("dev", "Postgres + NATS keep running (make services-down to stop)")
     return 0
 
 

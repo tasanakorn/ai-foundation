@@ -33,7 +33,7 @@
    3. Reply: `{"action":"allow"}` | `{"action":"deny","status":429,"message":"..."}` | `{"action":"modify","body":{...}}`.
    4. Timeout or no responder → `fail_open` decides.
 4. **Control events**: on revoke, publish `aif.control.v1.key_revoked` `{id}`. All nodes drop that key from their auth cache.
-5. **Dev loop**: `scripts/dev.py --services` starts `nats-server -js` (binary or Docker) for local work.
+5. **Dev loop**: NATS with JetStream is already in `deploy/local/compose.yaml` (`make services-up`, `NATS_URL` in `.env`).
 6. **Example extension**: a tiny Python or Go subscriber in `extensions/example-budget/` that denies requests over a per-tenant daily token limit.
 
 ## 2. Later

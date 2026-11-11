@@ -16,24 +16,22 @@ Design: [spec-0001](docs/specs/spec-0001-gateway-core-architecture.md). Product 
 | `gateway/`  | Gateway binary `aif`                  | Go                    |
 | `web/`      | Admin UI                              | Nuxt 4, Nuxt UI 4     |
 | `scripts/`  | Dev loop                              | Python (stdlib only)  |
+| `deploy/`   | Local backing services                | Docker Compose        |
 | `docs/`     | Product, specs, tasks, backlog        | Markdown              |
 
 Each part builds on its own from its folder. The root `Makefile` only delegates.
 
 ## 2. Dev loop
 
-Needs Go, Node + pnpm, Python 3. Optional: `llama-server` (llama.cpp).
+Needs Go, Node + pnpm, Python 3. Optional: `llama-server` (llama.cpp), Docker (Postgres + NATS).
 
 ```sh
-# .env at the repo root (gitignored); the shell environment wins over it
-OPENROUTER_API_KEY=sk-or-...
-LLAMA_MODEL=/path/to/model.gguf            # or LLAMA_HF=<huggingface repo>
-LLAMA_ARGS=--embeddings --pooling mean -c 4096
+cp .env.example .env     # then fill in OPENROUTER_API_KEY and LLAMA_MODEL or LLAMA_HF
+make dev                 # gateway + web (+ llama-server)
+make dev-all             # same, plus Postgres and NATS in Docker
 ```
 
-```sh
-make dev
-```
+`.env` is gitignored and read by both `scripts/dev.py` and Docker Compose. Variables set in your shell win over it.
 
 | Service         | URL                              | Notes                                         |
 | --------------- | -------------------------------- | --------------------------------------------- |
@@ -41,6 +39,12 @@ make dev
 | Admin API       | http://127.0.0.1:8081/admin/v1   | Master key `dev-master-key-0000`              |
 | Admin UI        | http://localhost:3000            | Nuxt HMR, proxies `/admin/v1`                 |
 | llama-server    | http://127.0.0.1:8090            | Only if `LLAMA_MODEL` or `LLAMA_HF` is set    |
+| PostgreSQL 18   | `127.0.0.1:5432`                 | `make dev-all` or `make services-up`          |
+| NATS 2.15 (JetStream) | `nats://127.0.0.1:4222`    | Monitor at http://127.0.0.1:8222              |
+
+1. Service commands: `make services-up`, `services-down` (keeps data), `services-reset` (deletes data), `services-ps`, `services-logs`, `psql`.
+2. llama.cpp runs natively, not in Docker: on macOS, Docker cannot use the Metal GPU.
+3. The gateway does not use Postgres or NATS yet. They are ready for [task-0004](docs/tasks/task-0004-postgres-store.md) and [task-0003](docs/tasks/task-0003-nats-events-and-hooks.md).
 
 Dev models (`gateway/aif.dev.yaml`): `mini` → OpenRouter `openai/gpt-4o-mini`, `local` → llama.cpp. Passthrough is on, so `openrouter/<any model>` works too.
 
