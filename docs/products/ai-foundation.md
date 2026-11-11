@@ -17,7 +17,7 @@ A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI ag
    2. Any direct OpenAI-compatible API (OpenAI, Groq, Together, vLLM, Ollama, LM Studio, …).
 3. **Metering.** Count tokens and cost for every request, including streams.
 4. **API keys.** Simple keys that are easy to map to tenants, apps, and end users.
-5. **Local admin.** Admin API on localhost by default. Web UI in Vue/Nuxt.
+5. **Built-in admin.** Own admin accounts (email + password, roles), so the gateway works without any outside identity system. Outside logins ("login with …") can be added later. Admin API on localhost by default, switchable to public. Web UI in Vue/Nuxt.
 6. **Extensible from outside.** New features live in separate services (any language) and talk to the core over REST or gRPC.
 7. **No big rewrites.** Start small, but put the seams (interfaces, contracts, schema) in place now.
 
@@ -25,15 +25,15 @@ A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI ag
 
 1. Not a full LiteLLM clone. No 100+ native provider SDKs in core.
 2. No built-in billing, invoicing, guardrails, prompt management, caching, or RAG in core. These are extensions.
-3. No user accounts or login system in core. The admin uses one master key. Identity systems sit on top.
+3. No end-user accounts in core. Core has only admin accounts, to operate the gateway. End-user identity lives in the apps on top (core sees only `end_user` labels).
 
 ## 4. Personas
 
-| Persona          | Needs                                                               |
-| ---------------- | ------------------------------------------------------------------- |
-| App developer    | One endpoint and one key. Works with the OpenAI SDK.                |
-| Platform builder | Admin API to create keys per tenant/app. Usage data for billing.    |
-| Operator         | Small footprint, one config file, easy deploy, clear logs.          |
+| Persona          | Needs                                                            |
+| ---------------- | ---------------------------------------------------------------- |
+| App developer    | One endpoint and one key. Works with the OpenAI SDK.             |
+| Platform builder | Admin API to create keys per tenant/app. Usage data for billing. |
+| Operator         | Small footprint, one config file, easy deploy, clear logs.       |
 
 ## 5. Docs
 

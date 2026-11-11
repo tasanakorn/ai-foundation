@@ -6,10 +6,14 @@ server:
 admin:
   listen: ${AIF_ADMIN_LISTEN:-127.0.0.1:8081}
   master_key: ${AIF_MASTER_KEY:-dev-master-key-0000}
+  bootstrap:   # first start only; sign in to the UI with this
+    email: ${AIF_ADMIN_EMAIL:-admin@example.com}
+    password: ${AIF_ADMIN_PASSWORD:-dev-admin-password}
+    name: Dev Admin
 
+# `make dev` starts PostgreSQL in Docker (deploy/local/compose.yaml).
 database:
-  driver: sqlite
-  dsn: ${AIF_DB:-aif.dev.db}
+  url: ${DATABASE_URL:-postgres://aif:aif-dev@127.0.0.1:5432/aif?sslmode=disable}
 
 metering:
   flush_interval: 200ms

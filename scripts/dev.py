@@ -6,7 +6,8 @@ Runs, with prefixed output:
   web      Nuxt dev server (own hot reload). Proxies /admin/v1 to the gateway.
   llama    llama-server, only if LLAMA_MODEL (path to .gguf) or LLAMA_HF (HF repo) is set.
   services Postgres + NATS via deploy/local/compose.yaml, left running on exit.
-           The gateway needs NATS. Use --no-services if you run NATS yourself (set NATS_URL).
+           The gateway needs NATS and PostgreSQL. Use --no-services if you run them yourself
+           (set NATS_URL and DATABASE_URL).
 
 Environment: read from the shell, then from .env at the repo root (shell wins).
 
@@ -72,7 +73,8 @@ def load_env() -> dict[str, str]:
         for k, v in parse_dotenv(dotenv.read_text()).items():
             env.setdefault(k, v)
     env.setdefault("AIF_MASTER_KEY", "dev-master-key-0000")
-    env.setdefault("AIF_DB", str(DEV / "aif.db"))
+    env.setdefault("AIF_ADMIN_EMAIL", "admin@example.com")
+    env.setdefault("AIF_ADMIN_PASSWORD", "dev-admin-password")
     return env
 
 
@@ -163,7 +165,7 @@ def main() -> int:
     procs: list[Proc] = []
 
     if not args.no_services and not start_services(env):
-        log("dev", "the gateway needs NATS: fix Docker, or run NATS yourself and use --no-services")
+        log("dev", "the gateway needs NATS and PostgreSQL: fix Docker, or run them yourself and use --no-services")
         return 1
 
     # llama-server (optional)
@@ -196,7 +198,8 @@ def main() -> int:
     log("dev", "admin API   http://127.0.0.1:8081/admin/v1")
     if not args.no_web:
         log("dev", "admin UI    http://localhost:3000")
-    log("dev", f"master key  {env['AIF_MASTER_KEY']}")
+    log("dev", f"admin login {env['AIF_ADMIN_EMAIL']} / {env['AIF_ADMIN_PASSWORD']} (created on first start)")
+    log("dev", f"master key  {env['AIF_MASTER_KEY']} (scripts)")
     if not env.get("OPENROUTER_API_KEY"):
         log("dev", "OPENROUTER_API_KEY is not set: openrouter models will fail")
 

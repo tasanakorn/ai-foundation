@@ -5,9 +5,8 @@
 # gateway
 /gateway/bin/
 /gateway/aif.yaml
-*.db
-*.db-shm
-*.db-wal
+# test-only downloads (embedded PostgreSQL)
+/gateway/.cache/
 
 # web
 /web/node_modules/

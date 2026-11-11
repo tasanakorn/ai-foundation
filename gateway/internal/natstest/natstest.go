@@ -32,7 +32,7 @@ func Run(t testing.TB) string {
 // Config is the default nats config section pointed at url.
 func Config(t testing.TB, url string) config.NATS {
 	t.Helper()
-	cfg, err := config.Parse([]byte("admin: { listen: off }\nnats: { url: " + url + " }\n"))
+	cfg, err := config.Parse([]byte("admin: { listen: off }\ndatabase: { url: \"postgres://unused\" }\nnats: { url: " + url + " }\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

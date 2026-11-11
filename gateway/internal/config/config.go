@@ -34,15 +34,38 @@ type Server struct {
 
 // Admin is the admin API (and optional web UI). It listens on localhost by default;
 // any address works (e.g. "0.0.0.0:8081" for public access). "off" disables it.
+//
+// People sign in with built-in accounts (email + password, stored in the database).
+// MasterKey is optional: a bearer token with the admin role, for scripts and emergency access.
 type Admin struct {
-	Listen    string `yaml:"listen"`
-	MasterKey string `yaml:"master_key"`
-	UIDir     string `yaml:"ui_dir"`
+	Listen       string         `yaml:"listen"`
+	MasterKey    string         `yaml:"master_key"`
+	UIDir        string         `yaml:"ui_dir"`
+	SessionTTL   time.Duration  `yaml:"session_ttl"`   // browser login lifetime; default 12h
+	CookieSecure string         `yaml:"cookie_secure"` // auto (HTTPS or X-Forwarded-Proto: https), always, never
+	Bootstrap    AdminBootstrap `yaml:"bootstrap"`
 }
+
+// AdminBootstrap creates the first admin account at startup when no account exists yet.
+// Later starts ignore it, so changing the password here has no effect after the first start.
+type AdminBootstrap struct {
+	Email    string `yaml:"email"`
+	Password string `yaml:"password"`
+	Name     string `yaml:"name"`
+}
+
+// MinPasswordLen is the shortest password accepted for admin accounts.
+const MinPasswordLen = 12
 
 func (a Admin) Enabled() bool { return a.Listen != "off" }
 
+// Database is PostgreSQL (required). URL is a postgres:// URL or key=value DSN.
 type Database struct {
+	URL      string `yaml:"url"`
+	MaxConns int32  `yaml:"max_conns"` // pool size per node; default 10
+	MinConns int32  `yaml:"min_conns"`
+
+	// Removed keys, kept only to give a clear error for old configs.
 	Driver string `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
 }
@@ -162,11 +185,14 @@ func (c *Config) applyDefaults() {
 	if c.Admin.Listen == "" {
 		c.Admin.Listen = "127.0.0.1:8081"
 	}
-	if c.Database.Driver == "" {
-		c.Database.Driver = "sqlite"
+	if c.Admin.SessionTTL == 0 {
+		c.Admin.SessionTTL = 12 * time.Hour
 	}
-	if c.Database.DSN == "" {
-		c.Database.DSN = "aif.db"
+	if c.Admin.CookieSecure == "" {
+		c.Admin.CookieSecure = "auto"
+	}
+	if c.Database.MaxConns == 0 {
+		c.Database.MaxConns = 10
 	}
 	if c.Metering.BufferSize == 0 {
 		c.Metering.BufferSize = 10000
@@ -217,18 +243,37 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate() error {
-	if c.Database.Driver != "sqlite" {
-		return fmt.Errorf("database.driver %q is not supported (supported: sqlite)", c.Database.Driver)
+	if (c.Database.Driver != "" && c.Database.Driver != "postgres") || c.Database.DSN != "" {
+		return fmt.Errorf("database.driver and database.dsn were removed: SQLite is no longer supported; set database.url to a PostgreSQL URL (DATABASE_URL)")
+	}
+	if c.Database.URL == "" {
+		return fmt.Errorf("database.url is required (set DATABASE_URL, e.g. postgres://aif:aif-dev@127.0.0.1:5432/aif?sslmode=disable)")
+	}
+	if c.Database.MaxConns < 1 || c.Database.MinConns < 0 || c.Database.MinConns > c.Database.MaxConns {
+		return fmt.Errorf("database: need 1 <= max_conns and 0 <= min_conns <= max_conns")
 	}
 	if c.Admin.Enabled() {
-		if c.Admin.MasterKey == "" {
-			return fmt.Errorf("admin.master_key is required when the admin API is enabled (set AIF_MASTER_KEY, or admin.listen: off)")
-		}
-		if len(c.Admin.MasterKey) < 16 {
-			return fmt.Errorf("admin.master_key must be at least 16 characters")
+		if c.Admin.MasterKey != "" && len(c.Admin.MasterKey) < 16 {
+			return fmt.Errorf("admin.master_key must be at least 16 characters (or empty to turn it off)")
 		}
 		if _, _, err := net.SplitHostPort(c.Admin.Listen); err != nil {
 			return fmt.Errorf("admin.listen: %w", err)
+		}
+		if c.Admin.SessionTTL < time.Minute {
+			return fmt.Errorf("admin.session_ttl must be at least 1m")
+		}
+		switch c.Admin.CookieSecure {
+		case "auto", "always", "never":
+		default:
+			return fmt.Errorf("admin.cookie_secure %q: use auto, always or never", c.Admin.CookieSecure)
+		}
+		if b := c.Admin.Bootstrap; b.Email != "" || b.Password != "" {
+			if !strings.Contains(b.Email, "@") {
+				return fmt.Errorf("admin.bootstrap.email %q is not an email address", b.Email)
+			}
+			if len(b.Password) < MinPasswordLen {
+				return fmt.Errorf("admin.bootstrap.password must be at least %d characters", MinPasswordLen)
+			}
 		}
 	}
 	for name, subj := range map[string]string{

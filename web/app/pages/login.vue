@@ -1,23 +1,20 @@
 <script setup lang="ts">
 definePageMeta({ layout: false })
 
-const { set } = useMasterKey()
-const api = useAdminApi()
+const { login } = useSession()
 const toast = useToast()
 
-const value = ref('')
+const form = reactive({ email: '', password: '' })
 const loading = ref(false)
 
 async function submit() {
-  if (!value.value) return
+  if (!form.email || !form.password) return
   loading.value = true
-  set(value.value)
   try {
-    await api('/models')
+    await login(form.email, form.password)
     await navigateTo('/')
   }
   catch (err) {
-    set('')
     toast.add({ title: 'Sign in failed', description: apiErrorMessage(err), color: 'error' })
   }
   finally {
@@ -37,11 +34,21 @@ async function submit() {
       </template>
 
       <form class="space-y-4" @submit.prevent="submit">
-        <UFormField label="Master key" help="Set by admin.master_key in the gateway config.">
-          <UInput v-model="value" type="password" autofocus class="w-full" placeholder="AIF_MASTER_KEY" />
+        <UFormField label="Email">
+          <UInput v-model="form.email" type="email" autocomplete="username" autofocus class="w-full" placeholder="admin@example.com" />
+        </UFormField>
+        <UFormField label="Password">
+          <UInput v-model="form.password" type="password" autocomplete="current-password" class="w-full" />
         </UFormField>
         <UButton type="submit" block :loading="loading" label="Sign in" />
       </form>
+
+      <template #footer>
+        <p class="text-xs text-muted">
+          No account yet? Set <code>admin.bootstrap</code> in the gateway config, or run
+          <code>aif admin create-user -email you@example.com</code>.
+        </p>
+      </template>
     </UCard>
   </div>
 </template>

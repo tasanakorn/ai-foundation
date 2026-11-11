@@ -1,39 +1,50 @@
-const STORAGE_KEY = 'aif.masterKey'
+import type { Me } from '~/types/admin'
 
-function readStored(): string {
-  try {
-    return sessionStorage.getItem(STORAGE_KEY) ?? ''
-  }
-  catch {
-    return ''
-  }
-}
+/**
+ * The signed-in admin. The session is an HttpOnly cookie set by the gateway, so
+ * scripts never see the token; we only keep who is signed in.
+ */
+export function useSession() {
+  const me = useState<Me | null>('me', () => null)
+  const canWrite = computed(() => me.value?.role === 'admin')
 
-/** Master key for the admin API. Kept in sessionStorage only (cleared when the tab closes). */
-export function useMasterKey() {
-  const key = useState<string>('masterKey', readStored)
-  function set(value: string) {
-    key.value = value
+  /** Loads the current user. Returns false when not signed in. */
+  async function load(): Promise<boolean> {
     try {
-      if (value) sessionStorage.setItem(STORAGE_KEY, value)
-      else sessionStorage.removeItem(STORAGE_KEY)
+      me.value = await $fetch<Me>('/admin/v1/auth/me')
+      return true
     }
-    catch { /* storage blocked: keep in memory only */ }
+    catch {
+      me.value = null
+      return false
+    }
   }
-  return { key, set }
+
+  async function login(email: string, password: string) {
+    me.value = await $fetch<Me>('/admin/v1/auth/login', { method: 'POST', body: { email, password } })
+  }
+
+  async function logout() {
+    try {
+      await $fetch('/admin/v1/auth/logout', { method: 'POST' })
+    }
+    finally {
+      me.value = null
+      await navigateTo('/login')
+    }
+  }
+
+  return { me, canWrite, load, login, logout }
 }
 
-/** Fetch client for /admin/v1. A 401 clears the key and returns to the login page. */
+/** Fetch client for /admin/v1. A 401 (session ended) returns to the login page. */
 export function useAdminApi() {
-  const { key, set } = useMasterKey()
+  const { me } = useSession()
   return $fetch.create({
     baseURL: '/admin/v1',
-    onRequest({ options }) {
-      options.headers.set('Authorization', `Bearer ${key.value}`)
-    },
     onResponseError({ response }) {
       if (response.status === 401) {
-        set('')
+        me.value = null
         navigateTo('/login')
       }
     },

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,13 +16,21 @@ import (
 	"ai-foundation/gateway/internal/config"
 	"ai-foundation/gateway/internal/gateway"
 	"ai-foundation/gateway/internal/natstest"
+	"ai-foundation/gateway/internal/pgtest"
 	"ai-foundation/gateway/internal/store"
-	"ai-foundation/gateway/internal/store/sqlite"
+	"ai-foundation/gateway/internal/store/postgres"
 )
 
-const masterKey = "test-master-key-123456"
+func TestMain(m *testing.M) { pgtest.Main(m) }
 
-// env is one gateway node on the real wiring (app.New) with an in-process NATS server.
+const (
+	masterKey    = "test-master-key-123456"
+	bootEmail    = "boot@example.com"
+	bootPassword = "boot-password-123"
+)
+
+// env is one gateway node on the real wiring (app.New) with an in-process NATS server
+// and its own PostgreSQL database.
 type env struct {
 	t        *testing.T
 	gw       *httptest.Server
@@ -82,7 +89,7 @@ func newEnv(t *testing.T, mut ...func(*config.Config)) *env {
 	seen := &[]map[string]any{}
 	up := fakeUpstream(t, seen)
 	t.Cleanup(up.Close)
-	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	st, err := postgres.Open(context.Background(), pgtest.URL(t), postgres.Options{MaxConns: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +109,8 @@ func (e *env) peer() *env {
 func (e *env) start() {
 	t := e.t
 	cfg, err := config.Parse([]byte(`
-admin: { master_key: ` + masterKey + ` }
+admin: { master_key: ` + masterKey + `, bootstrap: { email: ` + bootEmail + `, password: ` + bootPassword + `, name: Boot } }
+database: { url: "postgres://unused" }
 metering: { flush_interval: 10ms }
 nats: { url: ` + e.natsURL + ` }
 passthrough: true
@@ -125,7 +133,7 @@ models:
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { nb.Close(context.Background()) })
-	a, err := app.New(cfg, e.st, nb, log)
+	a, err := app.New(context.Background(), cfg, e.st, nb, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +186,7 @@ func (e *env) usage() []store.UsageRecord {
 }
 
 func TestAuth(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if code, _ := e.do(e.gw.URL, "GET", "/v1/models", "", ""); code != 401 {
 		t.Fatalf("no key: got %d", code)
@@ -202,6 +211,7 @@ func TestAuth(t *testing.T) {
 }
 
 func TestChatNonStreamMetersAndRewritesModel(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	secret, keyID := e.createKey(`{"tenant_id":"acme","app_id":"bot"}`)
 
@@ -234,6 +244,7 @@ func TestChatNonStreamMetersAndRewritesModel(t *testing.T) {
 }
 
 func TestChatStreamInjectsIncludeUsage(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	secret, _ := e.createKey(`{}`)
 	code, out := e.do(e.gw.URL, "POST", "/v1/chat/completions", secret, `{"model":"small","stream":true,"messages":[]}`)
@@ -251,6 +262,7 @@ func TestChatStreamInjectsIncludeUsage(t *testing.T) {
 }
 
 func TestEstimateWhenUsageMissing(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	secret, _ := e.createKey(`{}`)
 	if code, _ := e.do(e.gw.URL, "POST", "/v1/chat/completions", secret, `{"model":"no-usage"}`); code != 200 {
@@ -263,6 +275,7 @@ func TestEstimateWhenUsageMissing(t *testing.T) {
 }
 
 func TestUpstreamErrorPassesThroughAndIsRecorded(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	secret, _ := e.createKey(`{}`)
 	code, out := e.do(e.gw.URL, "POST", "/v1/chat/completions", secret, `{"model":"broken"}`)
@@ -276,6 +289,7 @@ func TestUpstreamErrorPassesThroughAndIsRecorded(t *testing.T) {
 }
 
 func TestModelRoutingAndAllowList(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	secret, _ := e.createKey(`{"allowed_models":["small","fake/vendor/*"]}`)
 
@@ -298,6 +312,7 @@ func TestModelRoutingAndAllowList(t *testing.T) {
 }
 
 func TestEmbeddingsAndSummary(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	secret, _ := e.createKey(`{"tenant_id":"acme"}`)
 	for range 3 {

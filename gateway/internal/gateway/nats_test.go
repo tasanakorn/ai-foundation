@@ -52,6 +52,7 @@ func (e *env) extension(decide func(hook.Request) hook.Decision) *[]hook.Request
 }
 
 func TestUsagePublishedToJetStream(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	secret, keyID := e.createKey(`{"tenant_id":"acme","app_id":"chat.bot"}`)
 	for range 2 {
@@ -86,6 +87,7 @@ func TestUsagePublishedToJetStream(t *testing.T) {
 }
 
 func TestPreRequestHookAllowDenyModify(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withHook(false))
 	seen := e.extension(func(r hook.Request) hook.Decision {
 		switch {
@@ -135,6 +137,7 @@ func TestPreRequestHookAllowDenyModify(t *testing.T) {
 }
 
 func TestPreRequestHookModifyStillChecksAllowList(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t, withHook(false))
 	e.extension(func(hook.Request) hook.Decision {
 		return hook.Decision{Action: hook.Modify, Body: json.RawMessage(`{"model":"no-usage"}`)}
@@ -146,6 +149,7 @@ func TestPreRequestHookModifyStillChecksAllowList(t *testing.T) {
 }
 
 func TestPreRequestHookFailClosedAndOpen(t *testing.T) {
+	t.Parallel()
 	closed := newEnv(t, withHook(false))
 	secret, _ := closed.createKey(`{}`)
 	code, out := closed.do(closed.gw.URL, "POST", "/v1/chat/completions", secret, `{"model":"small"}`)
@@ -175,6 +179,7 @@ func TestPreRequestHookFailClosedAndOpen(t *testing.T) {
 }
 
 func TestPreRequestHookModelFilter(t *testing.T) {
+	t.Parallel()
 	// No extension runs and the hook fails closed, but "small" is outside the filter.
 	e := newEnv(t, withHook(false, "fake/*"))
 	secret, _ := e.createKey(`{}`)
@@ -187,6 +192,7 @@ func TestPreRequestHookModelFilter(t *testing.T) {
 }
 
 func TestKeyRevokeReachesAllNodes(t *testing.T) {
+	t.Parallel()
 	a := newEnv(t)
 	b := a.peer() // same database and NATS, separate auth cache
 	secret, id := a.createKey(`{}`)
@@ -212,6 +218,7 @@ func TestKeyRevokeReachesAllNodes(t *testing.T) {
 }
 
 func TestHealthzReportsNATS(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	if code, _ := e.do(e.gw.URL, "GET", "/healthz", "", ""); code != 200 {
 		t.Fatalf("healthz: %d", code)

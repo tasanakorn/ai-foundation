@@ -20,7 +20,9 @@ export default defineNuxtConfig({
   },
   nitro: {
     devProxy: {
-      '/admin/v1': { target: `${adminURL}/admin/v1`, changeOrigin: true },
+      // Keep the browser's Host header: the gateway checks Origin == Host on writes (CSRF guard),
+      // and the session cookie is set for this origin.
+      '/admin/v1': { target: `${adminURL}/admin/v1`, changeOrigin: false },
     },
   },
 })

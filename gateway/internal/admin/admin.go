@@ -1,9 +1,11 @@
-// Package admin is the local admin REST API. It is the main integration point
+// Package admin is the admin REST API. It is the main integration point
 // for systems built on top (portals, billing, tenant managers) in any language.
+//
+// Callers sign in with a built-in account (session cookie, see auth.go) or send the
+// optional master key as a bearer token (scripts, emergency access).
 package admin
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-foundation/gateway/internal/auth"
 	"ai-foundation/gateway/internal/httpx"
 	"ai-foundation/gateway/internal/keys"
 	"ai-foundation/gateway/internal/router"
@@ -22,25 +25,30 @@ import (
 )
 
 type Handler struct {
-	keys      *keys.Service
-	st        store.Store
-	router    *router.Router
-	masterKey string
-	uiDir     string
-	log       *slog.Logger
+	keys         *keys.Service
+	auth         *auth.Service
+	st           store.Store
+	router       *router.Router
+	masterKey    string
+	cookieSecure string
+	uiDir        string
+	log          *slog.Logger
 }
 
 type Options struct {
-	Keys      *keys.Service
-	Store     store.Store
-	Router    *router.Router
-	MasterKey string
-	UIDir     string
-	Log       *slog.Logger
+	Keys         *keys.Service
+	Auth         *auth.Service
+	Store        store.Store
+	Router       *router.Router
+	MasterKey    string // optional; "" turns bearer master-key access off
+	CookieSecure string // auto, always, never
+	UIDir        string
+	Log          *slog.Logger
 }
 
 func New(o Options) *Handler {
-	return &Handler{keys: o.Keys, st: o.Store, router: o.Router, masterKey: o.MasterKey, uiDir: o.UIDir, log: o.Log}
+	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, router: o.Router, masterKey: o.MasterKey,
+		cookieSecure: o.CookieSecure, uiDir: o.UIDir, log: o.Log}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -48,7 +56,20 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	api := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, h.auth(fn)) }
+	// Sign-in endpoints. login has no auth; the others need a signed-in caller.
+	mux.Handle("POST /admin/v1/auth/login", h.sameOrigin(http.HandlerFunc(h.login)))
+	mux.Handle("POST /admin/v1/auth/logout", h.sameOrigin(http.HandlerFunc(h.logout)))
+	api := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, h.authenticate(fn, false)) }
+	self := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, h.authenticate(fn, true)) } // any role
+	self("GET /admin/v1/auth/me", h.me)
+	self("POST /admin/v1/auth/password", h.changePassword)
+
+	api("GET /admin/v1/users", h.listUsers)
+	api("POST /admin/v1/users", h.createUser)
+	api("GET /admin/v1/users/{id}", h.getUser)
+	api("PATCH /admin/v1/users/{id}", h.updateUser)
+	api("DELETE /admin/v1/users/{id}", h.deleteUser)
+
 	api("GET /admin/v1/keys", h.listKeys)
 	api("POST /admin/v1/keys", h.createKey)
 	api("GET /admin/v1/keys/{id}", h.getKey)
@@ -60,18 +81,6 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("GET /", spa(h.uiDir))
 	}
 	return mux
-}
-
-func (h *Handler) auth(next http.HandlerFunc) http.Handler {
-	want := []byte(h.masterKey)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := []byte(httpx.BearerToken(r))
-		if len(want) == 0 || subtle.ConstantTimeCompare(got, want) != 1 {
-			httpx.WriteError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_master_key", "invalid or missing master key")
-			return
-		}
-		next(w, r)
-	})
 }
 
 // ---- keys ----
@@ -94,10 +103,7 @@ func (h *Handler) listKeys(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createKey(w http.ResponseWriter, r *http.Request) {
 	var in keys.CreateInput
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid_json", err.Error())
+	if !decode(w, r, &in) {
 		return
 	}
 	secret, k, err := h.keys.Create(r.Context(), in)
@@ -197,9 +203,25 @@ func (h *Handler) summarizeUsage(w http.ResponseWriter, r *http.Request) {
 
 // ---- helpers ----
 
+// decode reads a JSON body (max 1 MiB, no unknown fields). On error it writes a 400 and returns false.
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid_json", err.Error())
+		return false
+	}
+	return true
+}
+
 func (h *Handler) fail(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		httpx.WriteError(w, http.StatusNotFound, "invalid_request_error", "not_found", "not found")
+		return
+	}
+	var ie *auth.InputError
+	if errors.As(err, &ie) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid_input", ie.Msg)
 		return
 	}
 	h.log.Error("admin request failed", "err", err)

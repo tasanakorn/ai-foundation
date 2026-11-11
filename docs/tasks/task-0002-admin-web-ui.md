@@ -23,5 +23,5 @@
 
 ## 3. Out of scope
 
-1. Multi-user login / RBAC. The UI uses the master key only.
+1. Multi-user login / RBAC. The UI uses the master key only. (Done later in [task-0005](task-0005-admin-accounts.md).)
 2. Embedding the UI into the Go binary (`go:embed`). Can follow later as a build flag.

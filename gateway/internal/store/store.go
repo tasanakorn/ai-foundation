@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("already exists")
+)
 
 // Key is a gateway API key. The secret is never stored; only its SHA-256 hash.
 //
@@ -94,6 +97,36 @@ type UsageSummary struct {
 // GroupBy values accepted by SummarizeUsage.
 var GroupBy = []string{"none", "day", "model", "provider", "key", "tenant", "app", "end_user"}
 
+// Admin roles. RoleAdmin can change everything; RoleViewer can only read.
+const (
+	RoleAdmin  = "admin"
+	RoleViewer = "viewer"
+)
+
+// AdminUser is a built-in admin account (email + password). Outside logins
+// ("login with ...") can map to these accounts later without a schema rewrite.
+type AdminUser struct {
+	ID           string     `json:"id"`
+	Email        string     `json:"email"` // stored lowercase; unique
+	Name         string     `json:"name"`
+	Role         string     `json:"role"`
+	PasswordHash string     `json:"-"` // argon2id PHC string; empty = password login off
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	DisabledAt   *time.Time `json:"disabled_at,omitempty"`
+}
+
+// AdminSession is a browser login. Hash is the SHA-256 of the cookie value; the value itself is never stored.
+type AdminSession struct {
+	Hash      string
+	UserID    string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	UserAgent string
+	IP        string
+}
+
 // Store is the persistence contract. Add new methods here; keep them small and generic.
 type Store interface {
 	CreateKey(ctx context.Context, k *Key) error
@@ -105,6 +138,21 @@ type Store interface {
 	InsertUsage(ctx context.Context, recs []UsageRecord) error
 	ListUsage(ctx context.Context, f UsageFilter) ([]UsageRecord, error)
 	SummarizeUsage(ctx context.Context, f UsageFilter, groupBy string) ([]UsageSummary, error)
+
+	CreateAdminUser(ctx context.Context, u *AdminUser) error // ErrConflict when the email exists
+	GetAdminUser(ctx context.Context, id string) (*AdminUser, error)
+	GetAdminUserByEmail(ctx context.Context, email string) (*AdminUser, error)
+	ListAdminUsers(ctx context.Context) ([]AdminUser, error)
+	UpdateAdminUser(ctx context.Context, u *AdminUser) error // name, role, password_hash, disabled_at, updated_at
+	DeleteAdminUser(ctx context.Context, id string) error
+	CountActiveAdmins(ctx context.Context) (int, error)
+	SetAdminLastLogin(ctx context.Context, id string, at time.Time) error
+
+	CreateAdminSession(ctx context.Context, s *AdminSession) error
+	GetAdminSession(ctx context.Context, hash string) (*AdminSession, error) // ErrNotFound when missing or expired
+	DeleteAdminSession(ctx context.Context, hash string) error
+	DeleteAdminSessions(ctx context.Context, userID, exceptHash string) error
+	DeleteExpiredAdminSessions(ctx context.Context, now time.Time) error
 
 	Close() error
 }

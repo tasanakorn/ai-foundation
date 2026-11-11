@@ -79,3 +79,40 @@ export interface ModelsResponse {
 export interface ListResponse<T> {
   data: T[]
 }
+
+// ---- admin accounts (/admin/v1/auth, /admin/v1/users) ----
+
+export type Role = 'admin' | 'viewer'
+
+export interface AdminUser {
+  id: string
+  email: string
+  name: string
+  role: Role
+  created_at: string
+  updated_at: string
+  last_login_at?: string
+  disabled_at?: string
+}
+
+/** GET /auth/me and POST /auth/login. user is null for the master key. */
+export interface Me {
+  user: AdminUser | null
+  role: Role
+  method: 'session' | 'master_key'
+}
+
+export interface CreateUserInput {
+  email: string
+  name: string
+  role: Role
+  password: string
+}
+
+/** PATCH /users/{id}: only the fields that are set change. */
+export interface UpdateUserInput {
+  name?: string
+  role?: Role
+  disabled?: boolean
+  password?: string
+}

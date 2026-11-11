@@ -4,6 +4,7 @@ import type { ApiKey, CreatedKey, CreateKeyInput, ListResponse } from '~/types/a
 
 const api = useAdminApi()
 const toast = useToast()
+const { canWrite } = useSession()
 
 const filters = reactive({ tenant_id: '', app_id: '', include_revoked: false })
 const query = computed(() => ({
@@ -116,7 +117,7 @@ async function revoke() {
           <UDashboardSidebarCollapse />
         </template>
         <template #right>
-          <UButton icon="i-lucide-plus" label="New key" @click="openCreate" />
+          <UButton v-if="canWrite" icon="i-lucide-plus" label="New key" @click="openCreate" />
         </template>
       </UDashboardNavbar>
       <UDashboardToolbar>
@@ -153,7 +154,7 @@ async function revoke() {
         </template>
         <template #actions-cell="{ row }">
           <UButton
-            v-if="!row.original.revoked_at"
+            v-if="canWrite && !row.original.revoked_at"
             icon="i-lucide-ban"
             label="Revoke"
             color="error"
