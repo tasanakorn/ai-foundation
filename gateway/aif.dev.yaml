@@ -14,6 +14,14 @@ database:
 metering:
   flush_interval: 200ms
 
+# Required. `make dev` starts NATS (JetStream) in Docker.
+nats:
+  url: ${NATS_URL:-nats://127.0.0.1:4222}
+  hooks:
+    pre_request:
+      subject: aif.hook.pre_request.v1
+      fail_open: true          # dev: allow when no extension runs (see extensions/example-budget)
+
 passthrough: true
 
 providers:

@@ -20,6 +20,7 @@ type Config struct {
 	Admin       Admin      `yaml:"admin"`
 	Database    Database   `yaml:"database"`
 	Metering    Metering   `yaml:"metering"`
+	NATS        NATS       `yaml:"nats"`
 	Providers   []Provider `yaml:"providers"`
 	Models      []Model    `yaml:"models"`
 	Passthrough bool       `yaml:"passthrough"`
@@ -50,6 +51,44 @@ type Metering struct {
 	BatchSize     int           `yaml:"batch_size"`
 	FlushInterval time.Duration `yaml:"flush_interval"`
 }
+
+// NATS is the required message bus. Usage events, hooks and control events go through it,
+// so extensions in any language only need a NATS client.
+type NATS struct {
+	URL            string        `yaml:"url"`
+	Creds          string        `yaml:"creds"` // optional .creds file (JWT + nkey)
+	ConnectTimeout time.Duration `yaml:"connect_timeout"`
+	Usage          NATSUsage     `yaml:"usage"`
+	Control        NATSControl   `yaml:"control"`
+	Hooks          Hooks         `yaml:"hooks"`
+}
+
+type NATSUsage struct {
+	SubjectPrefix string        `yaml:"subject_prefix"` // records go to <prefix>.<tenant>.<app>
+	JetStream     *bool         `yaml:"jetstream"`      // default true: durable stream with dedup
+	Stream        string        `yaml:"stream"`
+	MaxAge        time.Duration `yaml:"max_age"` // stream retention, used only when the gateway creates it
+}
+
+func (u NATSUsage) UseJetStream() bool { return u.JetStream == nil || *u.JetStream }
+
+type NATSControl struct {
+	SubjectPrefix string `yaml:"subject_prefix"` // events go to <prefix>.<event>, e.g. key_revoked
+}
+
+type Hooks struct {
+	PreRequest Hook `yaml:"pre_request"`
+}
+
+// Hook is one request/reply extension point. An empty Subject turns it off.
+type Hook struct {
+	Subject  string        `yaml:"subject"`
+	Timeout  time.Duration `yaml:"timeout"`
+	FailOpen bool          `yaml:"fail_open"` // on timeout / no responder: true = allow, false = 503
+	Models   []string      `yaml:"models"`    // same patterns as key allow-lists; empty = all
+}
+
+func (h Hook) Enabled() bool { return h.Subject != "" }
 
 type Provider struct {
 	Name    string            `yaml:"name"`
@@ -137,6 +176,28 @@ func (c *Config) applyDefaults() {
 	if c.Metering.FlushInterval == 0 {
 		c.Metering.FlushInterval = time.Second
 	}
+	n := &c.NATS
+	if n.URL == "" {
+		n.URL = "nats://127.0.0.1:4222"
+	}
+	if n.ConnectTimeout == 0 {
+		n.ConnectTimeout = 5 * time.Second
+	}
+	if n.Usage.SubjectPrefix == "" {
+		n.Usage.SubjectPrefix = "aif.usage.v1"
+	}
+	if n.Usage.Stream == "" {
+		n.Usage.Stream = "AIF_USAGE"
+	}
+	if n.Usage.MaxAge == 0 {
+		n.Usage.MaxAge = 30 * 24 * time.Hour
+	}
+	if n.Control.SubjectPrefix == "" {
+		n.Control.SubjectPrefix = "aif.control.v1"
+	}
+	if n.Hooks.PreRequest.Timeout == 0 {
+		n.Hooks.PreRequest.Timeout = 200 * time.Millisecond
+	}
 	for i := range c.Providers {
 		p := &c.Providers[i]
 		if p.Type == "" {
@@ -169,6 +230,15 @@ func (c *Config) validate() error {
 			return fmt.Errorf("admin.listen: %w", err)
 		}
 	}
+	for name, subj := range map[string]string{
+		"nats.usage.subject_prefix":      c.NATS.Usage.SubjectPrefix,
+		"nats.control.subject_prefix":    c.NATS.Control.SubjectPrefix,
+		"nats.hooks.pre_request.subject": c.NATS.Hooks.PreRequest.Subject,
+	} {
+		if subj != "" && !validSubject(subj) {
+			return fmt.Errorf("%s %q is not a valid NATS subject (no spaces, wildcards or empty tokens)", name, subj)
+		}
+	}
 	providers := map[string]bool{}
 	for _, p := range c.Providers {
 		switch {
@@ -198,4 +268,14 @@ func (c *Config) validate() error {
 		models[m.Name] = true
 	}
 	return nil
+}
+
+// validSubject accepts a literal NATS subject: dot-separated, non-empty tokens, no wildcards or spaces.
+func validSubject(s string) bool {
+	for _, tok := range strings.Split(s, ".") {
+		if tok == "" || strings.ContainsAny(tok, "*> \t\r\n") {
+			return false
+		}
+	}
+	return true
 }

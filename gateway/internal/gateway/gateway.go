@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-foundation/gateway/internal/hook"
 	"ai-foundation/gateway/internal/httpx"
 	"ai-foundation/gateway/internal/id"
 	"ai-foundation/gateway/internal/keys"
@@ -34,6 +35,8 @@ type Handler struct {
 	router  *router.Router
 	keys    *keys.Service
 	rec     *metering.Recorder
+	hook    hook.Hook
+	ready   func() error
 	log     *slog.Logger
 	maxBody int64
 	timeout time.Duration
@@ -43,18 +46,27 @@ type Options struct {
 	Router          *router.Router
 	Keys            *keys.Service
 	Recorder        *metering.Recorder
+	Hook            hook.Hook    // optional pre-request hook, already wrapped with hook.Guard
+	Ready           func() error // optional; a non-nil error makes /healthz answer 503
 	Log             *slog.Logger
 	MaxBodyBytes    int64
 	UpstreamTimeout time.Duration
 }
 
 func New(o Options) *Handler {
-	return &Handler{router: o.Router, keys: o.Keys, rec: o.Recorder, log: o.Log, maxBody: o.MaxBodyBytes, timeout: o.UpstreamTimeout}
+	return &Handler{router: o.Router, keys: o.Keys, rec: o.Recorder, hook: o.Hook, ready: o.Ready, log: o.Log,
+		maxBody: o.MaxBodyBytes, timeout: o.UpstreamTimeout}
 }
 
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if h.ready != nil {
+			if err := h.ready(); err != nil {
+				httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": err.Error()})
+				return
+			}
+		}
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.Handle("GET /v1/models", h.auth(h.listModels))
@@ -101,6 +113,46 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 
 // ---- proxy ----
 
+type apiError struct {
+	status         int
+	typ, code, msg string
+}
+
+func (e *apiError) write(w http.ResponseWriter) { httpx.WriteError(w, e.status, e.typ, e.code, e.msg) }
+
+func badRequest(code, msg string) *apiError {
+	return &apiError{http.StatusBadRequest, "invalid_request_error", code, msg}
+}
+
+// prepared is a request body after parsing, routing and the key's allow-list check.
+type prepared struct {
+	req    map[string]json.RawMessage // top level only; unknown fields pass through untouched
+	model  string
+	route  router.Route
+	stream bool
+	size   int // body bytes, for the token estimate when usage is missing
+}
+
+func (h *Handler) prepare(k *store.Key, body []byte) (*prepared, *apiError) {
+	p := prepared{size: len(body)}
+	if err := json.Unmarshal(body, &p.req); err != nil || p.req == nil {
+		return nil, badRequest("invalid_json", "request body must be a JSON object")
+	}
+	p.model = stringField(p.req, "model")
+	if p.model == "" {
+		return nil, badRequest("missing_model", "model is required")
+	}
+	var ok bool
+	if p.route, ok = h.router.Resolve(p.model); !ok {
+		return nil, &apiError{http.StatusNotFound, "invalid_request_error", "model_not_found", "model " + p.model + " does not exist"}
+	}
+	if !keys.Allows(k, p.model) {
+		return nil, &apiError{http.StatusForbidden, "invalid_request_error", "model_not_allowed", "this key may not use model " + p.model}
+	}
+	p.stream = boolField(p.req, "stream")
+	return &p, nil
+}
+
 func (h *Handler) forward(endpoint string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -118,53 +170,49 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "bad_body", "cannot read request body")
 			return
 		}
-		// Decode only the top level. Unknown fields pass through untouched.
-		var req map[string]json.RawMessage
-		if err := json.Unmarshal(body, &req); err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid_json", "request body must be a JSON object")
-			return
-		}
-		model := stringField(req, "model")
-		if model == "" {
-			httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "missing_model", "model is required")
-			return
-		}
-		route, ok := h.router.Resolve(model)
-		if !ok {
-			httpx.WriteError(w, http.StatusNotFound, "invalid_request_error", "model_not_found", "model "+model+" does not exist")
-			return
-		}
-		if !keys.Allows(k, model) {
-			httpx.WriteError(w, http.StatusForbidden, "invalid_request_error", "model_not_allowed", "this key may not use model "+model)
+		p, aerr := h.prepare(k, body)
+		if aerr != nil {
+			aerr.write(w) // client mistakes are not metered
 			return
 		}
 
-		stream := boolField(req, "stream")
 		rec := store.UsageRecord{
 			ID: reqID, CreatedAt: start.UTC(), KeyID: k.ID, TenantID: k.TenantID, AppID: k.AppID,
-			EndUser: r.Header.Get(EndUserHeader), Endpoint: endpoint, Model: model,
-			Provider: route.Provider.Name(), UpstreamModel: route.Upstream, Stream: stream,
+			EndUser: r.Header.Get(EndUserHeader), Endpoint: endpoint,
 		}
 		if rec.EndUser == "" {
-			rec.EndUser = stringField(req, "user")
+			rec.EndUser = stringField(p.req, "user")
 		}
+		setRoute := func(p *prepared) {
+			rec.Model, rec.Provider, rec.UpstreamModel, rec.Stream = p.model, p.route.Provider.Name(), p.route.Upstream, p.stream
+		}
+		setRoute(p)
 		defer func() {
 			rec.LatencyMS = time.Since(start).Milliseconds()
 			h.rec.Record(rec)
-			h.log.Info("request", "id", reqID, "key", k.ID, "model", model, "provider", rec.Provider,
-				"status", rec.StatusCode, "stream", stream, "tokens", rec.TotalTokens, "estimated", rec.Estimated,
+			h.log.Info("request", "id", reqID, "key", k.ID, "model", rec.Model, "provider", rec.Provider,
+				"status", rec.StatusCode, "stream", rec.Stream, "tokens", rec.TotalTokens, "estimated", rec.Estimated,
 				"latency_ms", rec.LatencyMS)
 		}()
 
-		req["model"], _ = json.Marshal(route.Upstream)
-		if stream && endpoint != "/embeddings" {
-			injectIncludeUsage(req)
+		if h.hook != nil {
+			if p, aerr = h.runHook(r.Context(), k, &rec, endpoint, body, p); aerr != nil {
+				rec.StatusCode, rec.Error = aerr.status, aerr.code+": "+aerr.msg
+				aerr.write(w)
+				return
+			}
+			setRoute(p)
 		}
-		out, _ := json.Marshal(req)
+
+		p.req["model"], _ = json.Marshal(p.route.Upstream)
+		if p.stream && endpoint != "/embeddings" {
+			injectIncludeUsage(p.req)
+		}
+		out, _ := json.Marshal(p.req)
 
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
-		resp, err := route.Provider.Do(ctx, endpoint, out)
+		resp, err := p.route.Provider.Do(ctx, endpoint, out)
 		if err != nil {
 			rec.StatusCode, rec.Error = http.StatusBadGateway, err.Error()
 			switch {
@@ -180,12 +228,34 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 		defer resp.Body.Close()
 
 		isSSE := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
-		if stream && resp.StatusCode == http.StatusOK && isSSE {
-			h.pipeStream(r.Context(), w, resp, &rec, route, len(body))
+		if p.stream && resp.StatusCode == http.StatusOK && isSSE {
+			h.pipeStream(r.Context(), w, resp, &rec, p.route, p.size)
 		} else {
-			h.pipeBody(w, resp, &rec, route, len(body))
+			h.pipeBody(w, resp, &rec, p.route, p.size)
 		}
 	}
+}
+
+// runHook asks the pre-request hook. It returns the request to send: the same one,
+// or the hook's replacement (parsed, routed and allow-list checked again).
+func (h *Handler) runHook(ctx context.Context, k *store.Key, rec *store.UsageRecord, endpoint string, body []byte, p *prepared) (*prepared, *apiError) {
+	d, err := h.hook.PreRequest(ctx, &hook.Request{
+		RequestID: rec.ID,
+		Key:       hook.Key{ID: k.ID, TenantID: k.TenantID, AppID: k.AppID, Metadata: k.Metadata},
+		EndUser:   rec.EndUser, Endpoint: endpoint,
+		Model: p.model, Provider: rec.Provider, UpstreamModel: rec.UpstreamModel, Stream: p.stream,
+		Body: body,
+	})
+	if err != nil {
+		return nil, &apiError{http.StatusServiceUnavailable, "server_error", "hook_unavailable", "request policy check is unavailable, try again later"}
+	}
+	switch d.Action {
+	case hook.Deny:
+		return nil, &apiError{d.Status, "invalid_request_error", d.Code, d.Message}
+	case hook.Modify:
+		return h.prepare(k, d.Body)
+	}
+	return p, nil
 }
 
 type choice struct {

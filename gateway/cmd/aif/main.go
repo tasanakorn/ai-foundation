@@ -13,13 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"ai-foundation/gateway/internal/admin"
+	"ai-foundation/gateway/internal/app"
+	"ai-foundation/gateway/internal/bus"
 	"ai-foundation/gateway/internal/config"
-	"ai-foundation/gateway/internal/gateway"
-	"ai-foundation/gateway/internal/keys"
-	"ai-foundation/gateway/internal/metering"
-	"ai-foundation/gateway/internal/provider"
-	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store/sqlite"
 )
 
@@ -58,26 +54,23 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 	defer st.Close()
 
-	providers, err := provider.Build(cfg.Providers, provider.NewHTTPClient())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	nb, err := bus.Connect(ctx, cfg.NATS, log) // required; fails fast when NATS is down
 	if err != nil {
 		return err
 	}
-	rt := router.New(cfg.Models, providers, cfg.Passthrough)
-	ks := keys.NewService(st)
-	rec := metering.NewRecorder(cfg.Metering, log, metering.StoreSink{Store: st})
-
-	gw := gateway.New(gateway.Options{
-		Router: rt, Keys: ks, Recorder: rec, Log: log,
-		MaxBodyBytes: cfg.Server.MaxBodyBytes, UpstreamTimeout: cfg.Server.UpstreamTimeout,
-	})
-	servers := []*http.Server{{Addr: cfg.Server.Listen, Handler: gw.Routes(), ReadHeaderTimeout: 10 * time.Second}}
-	if cfg.Admin.Enabled() {
-		ad := admin.New(admin.Options{Keys: ks, Store: st, Router: rt, MasterKey: cfg.Admin.MasterKey, UIDir: cfg.Admin.UIDir, Log: log})
-		servers = append(servers, &http.Server{Addr: cfg.Admin.Listen, Handler: ad.Routes(), ReadHeaderTimeout: 10 * time.Second})
+	a, err := app.New(cfg, st, nb, log)
+	if err != nil {
+		nb.Close(context.Background())
+		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	servers := []*http.Server{{Addr: cfg.Server.Listen, Handler: a.Public, ReadHeaderTimeout: 10 * time.Second}}
+	if a.Admin != nil {
+		servers = append(servers, &http.Server{Addr: cfg.Admin.Listen, Handler: a.Admin, ReadHeaderTimeout: 10 * time.Second})
+	}
 
 	errCh := make(chan error, len(servers))
 	for _, s := range servers {
@@ -88,7 +81,7 @@ func run(cfgPath string, log *slog.Logger) error {
 			}
 		}()
 	}
-	log.Info("aif started", "version", version, "providers", rt.Providers(), "models", len(rt.Models()))
+	log.Info("aif started", "version", version, "node", nb.NodeID, "providers", a.Router.Providers(), "models", len(a.Router.Models()))
 
 	select {
 	case <-ctx.Done():
@@ -101,8 +94,11 @@ func run(cfgPath string, log *slog.Logger) error {
 	for _, s := range servers {
 		_ = s.Shutdown(shutCtx)
 	}
-	if cerr := rec.Close(shutCtx); cerr != nil {
+	if cerr := a.Close(shutCtx); cerr != nil {
 		log.Warn("usage flush incomplete", "err", cerr)
+	}
+	if cerr := nb.Close(shutCtx); cerr != nil {
+		log.Warn("nats close incomplete", "err", cerr)
 	}
 	return err
 }

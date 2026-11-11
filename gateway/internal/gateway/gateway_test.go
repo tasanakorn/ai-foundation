@@ -12,25 +12,27 @@ import (
 	"testing"
 	"time"
 
-	"ai-foundation/gateway/internal/admin"
+	"ai-foundation/gateway/internal/app"
+	"ai-foundation/gateway/internal/bus"
 	"ai-foundation/gateway/internal/config"
 	"ai-foundation/gateway/internal/gateway"
-	"ai-foundation/gateway/internal/keys"
-	"ai-foundation/gateway/internal/metering"
-	"ai-foundation/gateway/internal/provider"
-	"ai-foundation/gateway/internal/router"
+	"ai-foundation/gateway/internal/natstest"
 	"ai-foundation/gateway/internal/store"
 	"ai-foundation/gateway/internal/store/sqlite"
 )
 
 const masterKey = "test-master-key-123456"
 
+// env is one gateway node on the real wiring (app.New) with an in-process NATS server.
 type env struct {
 	t        *testing.T
 	gw       *httptest.Server
 	admin    *httptest.Server
-	rec      *metering.Recorder
+	app      *app.App
 	st       store.Store
+	natsURL  string
+	upURL    string
+	mut      []func(*config.Config)
 	upstream *[]map[string]any // request bodies seen by the fake upstream
 }
 
@@ -75,17 +77,37 @@ func fakeUpstream(t *testing.T, seen *[]map[string]any) *httptest.Server {
 	}))
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T, mut ...func(*config.Config)) *env {
 	t.Helper()
 	seen := &[]map[string]any{}
 	up := fakeUpstream(t, seen)
 	t.Cleanup(up.Close)
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	e := &env{t: t, st: st, natsURL: natstest.Run(t), upURL: up.URL, mut: mut, upstream: seen}
+	e.start()
+	return e
+}
 
+// peer starts a second node that shares the database, NATS and upstream.
+func (e *env) peer() *env {
+	cp := *e
+	cp.start()
+	return &cp
+}
+
+func (e *env) start() {
+	t := e.t
 	cfg, err := config.Parse([]byte(`
 admin: { master_key: ` + masterKey + ` }
+metering: { flush_interval: 10ms }
+nats: { url: ` + e.natsURL + ` }
 passthrough: true
 providers:
-  - { name: fake, base_url: ` + up.URL + `/v1, api_key: upstream-secret }
+  - { name: fake, base_url: ` + e.upURL + `/v1, api_key: upstream-secret }
 models:
   - { name: small, provider: fake, upstream: vendor/small-v1, price: { input: 1, output: 2, cached_input: 0.5 } }
   - { name: broken, provider: fake }
@@ -94,25 +116,25 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	for _, m := range e.mut {
+		m(cfg)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nb, err := bus.Connect(context.Background(), cfg.NATS, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { st.Close() })
-
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	providers, _ := provider.Build(cfg.Providers, provider.NewHTTPClient())
-	rt := router.New(cfg.Models, providers, cfg.Passthrough)
-	ks := keys.NewService(st)
-	cfg.Metering.FlushInterval = 10 * time.Millisecond
-	rec := metering.NewRecorder(cfg.Metering, log, metering.StoreSink{Store: st})
-
-	gw := httptest.NewServer(gateway.New(gateway.Options{Router: rt, Keys: ks, Recorder: rec, Log: log,
-		MaxBodyBytes: cfg.Server.MaxBodyBytes, UpstreamTimeout: time.Minute}).Routes())
-	t.Cleanup(gw.Close)
-	ad := httptest.NewServer(admin.New(admin.Options{Keys: ks, Store: st, Router: rt, MasterKey: masterKey, Log: log}).Routes())
-	t.Cleanup(ad.Close)
-	return &env{t: t, gw: gw, admin: ad, rec: rec, st: st, upstream: seen}
+	t.Cleanup(func() { nb.Close(context.Background()) })
+	a, err := app.New(cfg, e.st, nb, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close(context.Background()) })
+	e.app = a
+	e.gw = httptest.NewServer(a.Public)
+	t.Cleanup(e.gw.Close)
+	e.admin = httptest.NewServer(a.Admin)
+	t.Cleanup(e.admin.Close)
 }
 
 func (e *env) do(base, method, path, token, body string, hdr ...string) (int, string) {

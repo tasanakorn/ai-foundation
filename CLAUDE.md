@@ -39,14 +39,16 @@ Guidance for Claude Code in this repository.
 
 1. One top-level folder per part. Each part has its own toolchain file and builds alone. Never put Go or JS files at the repo root.
 
-   | Folder      | Part              | Check before done                     |
-   | ----------- | ----------------- | ------------------------------------- |
-   | `gateway/`  | Go gateway `aif`  | `make -C gateway vet test`            |
-   | `web/`      | Nuxt admin UI     | `cd web && pnpm typecheck`            |
-   | `scripts/`  | Dev tooling       | Python, stdlib only                   |
-   | `deploy/`   | Compose / deploy  | `docker compose -f deploy/local/compose.yaml config` |
+   | Folder               | Part                           | Check before done                                    |
+   | -------------------- | ------------------------------ | ---------------------------------------------------- |
+   | `gateway/`           | Go gateway `aif`               | `make -C gateway vet test`                           |
+   | `web/`               | Nuxt admin UI                  | `cd web && pnpm typecheck`                           |
+   | `scripts/`           | Dev tooling                    | Python, stdlib only                                  |
+   | `deploy/`            | Compose / deploy               | `docker compose -f deploy/local/compose.yaml config` |
+   | `extensions/<name>/` | Example extensions (NATS only) | Runs against `make services-up`                      |
 
 2. New parts (extensions, SDKs) get a new top-level folder, for example `extensions/<name>/`.
 3. Architecture and decisions: `docs/specs/spec-0001-gateway-core-architecture.md`. Admin API shapes are mirrored in `web/app/types/admin.ts`; change both together.
-4. Preferred backing services: PostgreSQL and NATS. SQLite stays the zero-setup default.
-5. Local env: new settings go in `.env.example` (with a comment) and are read from the repo-root `.env`. Never commit `.env`.
+4. Backing services: NATS (JetStream) is required (spec D14). PostgreSQL is the preferred production store; SQLite stays the embedded default.
+5. NATS subjects and payloads (spec §8.1) are a public contract. Version them (`.v1`); never change a released payload in a breaking way.
+6. Local env: new settings go in `.env.example` (with a comment) and are read from the repo-root `.env`. Never commit `.env`.

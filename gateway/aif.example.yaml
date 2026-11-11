@@ -20,6 +20,25 @@ metering:
   batch_size: 200
   flush_interval: 1s
 
+# NATS is required. Extensions in any language plug in here (see docs/specs/spec-0001 §8).
+nats:
+  url: ${NATS_URL:-nats://127.0.0.1:4222}
+  creds: ${NATS_CREDS:-}       # optional .creds file (JWT + nkey)
+  connect_timeout: 5s          # startup fails if NATS is not reachable; later it reconnects forever
+  usage:
+    subject_prefix: aif.usage.v1   # one JSON record per request on <prefix>.<tenant>.<app>
+    jetstream: true                # durable stream with dedup by request ID
+    stream: AIF_USAGE
+    max_age: 720h                  # retention, used only when the gateway creates the stream
+  control:
+    subject_prefix: aif.control.v1 # key_revoked: every node drops the key at once
+  hooks:
+    pre_request:                   # request/reply: allow, deny or modify before upstream
+      subject: ""                  # empty = off, e.g. aif.hook.pre_request.v1
+      timeout: 200ms
+      fail_open: false             # no answer in time: false = 503, true = allow
+      models: ["*"]                # key allow-list patterns
+
 # Allow "<provider>/<upstream model>" for any model, e.g. "openrouter/anthropic/claude-sonnet-4.5".
 passthrough: true
 

@@ -31,7 +31,8 @@ func Open(dsn string) (*Store, error) {
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
-	dsn += sep + "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	// busy_timeout first: switching to WAL needs a lock another process may hold.
+	dsn += sep + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -40,7 +41,18 @@ func Open(dsn string) (*Store, error) {
 	// SQLite allows one writer at a time. A small pool keeps memory low and avoids lock churn.
 	db.SetMaxOpenConns(4)
 	s := &Store{db: db}
-	if err := s.migrate(context.Background()); err != nil {
+	// A brand-new file switches to WAL on first use. That switch can fail with SQLITE_BUSY
+	// at once (busy_timeout does not cover it) when another process opens the file at the
+	// same moment, so retry for a short while.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err = s.migrate(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -94,30 +106,40 @@ var migrations = []string{
 	CREATE INDEX idx_usage_owner ON usage_records(tenant_id, app_id, created_at);`,
 }
 
-func (s *Store) migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+// migrate applies new migrations in one write transaction. BEGIN IMMEDIATE takes the
+// write lock first (waiting up to busy_timeout), so several processes starting at
+// once on the same file apply each migration exactly once.
+func (s *Store) migrate(ctx context.Context) (err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	var current int
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
 	for v := current + 1; v <= len(migrations); v++ {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, migrations[v-1]); err != nil {
-			tx.Rollback()
+		if _, err := conn.ExecContext(ctx, migrations[v-1]); err != nil {
 			return fmt.Errorf("migrate v%d: %w", v, err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, v, time.Now().UnixMilli()); err != nil {
-			tx.Rollback()
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, v, time.Now().UnixMilli()); err != nil {
 			return fmt.Errorf("migrate v%d: %w", v, err)
 		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("migrate: %w", err)
 	}
 	return nil
 }

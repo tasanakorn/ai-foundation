@@ -2,14 +2,11 @@
 
 COMPOSE := docker compose -f deploy/local/compose.yaml $(if $(wildcard .env),--env-file .env)
 
-.PHONY: dev dev-all test build build-gateway build-web \
+.PHONY: dev test build build-gateway build-web \
         services-up services-down services-reset services-ps services-logs psql
 
-dev:            ## gateway (auto rebuild) + web (HMR) + optional llama-server
+dev:            ## Postgres + NATS (Docker) + gateway (auto rebuild) + web (HMR) + optional llama-server
 	python scripts/dev.py
-
-dev-all:        ## dev + Postgres and NATS
-	python scripts/dev.py --services
 
 test:           ## all tests and type checks
 	$(MAKE) -C gateway vet test

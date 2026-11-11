@@ -56,13 +56,19 @@ type entry struct {
 }
 
 // Service authenticates keys with a short in-memory cache in front of the store.
-// Revocation through this Service is instant on this node; other nodes see it within cacheTTL.
+// Revocation through this Service is instant on this node. Other nodes drop the key
+// when they get the key_revoked control event (see OnRevoke), or at the latest after cacheTTL.
 type Service struct {
-	st    store.Store
-	now   func() time.Time
-	mu    sync.RWMutex
-	cache map[string]entry
+	st       store.Store
+	now      func() time.Time
+	mu       sync.RWMutex
+	cache    map[string]entry
+	onRevoke func(ctx context.Context, id string)
 }
+
+// OnRevoke registers fn to run after a key is revoked, e.g. to tell other nodes.
+// Call it before serving requests.
+func (s *Service) OnRevoke(fn func(ctx context.Context, id string)) { s.onRevoke = fn }
 
 func NewService(st store.Store) *Service {
 	return &Service{st: st, now: time.Now, cache: map[string]entry{}}
@@ -136,6 +142,15 @@ func (s *Service) Revoke(ctx context.Context, id string) error {
 	if err := s.st.RevokeKey(ctx, id, s.now().UTC()); err != nil {
 		return err
 	}
+	s.Forget(id)
+	if s.onRevoke != nil {
+		s.onRevoke(ctx, id)
+	}
+	return nil
+}
+
+// Forget drops key id from the auth cache, so the next request reads the store.
+func (s *Service) Forget(id string) {
 	s.mu.Lock()
 	for h, e := range s.cache {
 		if e.key != nil && e.key.ID == id {
@@ -143,16 +158,26 @@ func (s *Service) Revoke(ctx context.Context, id string) error {
 		}
 	}
 	s.mu.Unlock()
-	return nil
+}
+
+// ForgetAll clears the auth cache, e.g. after missing control events while disconnected.
+func (s *Service) ForgetAll() {
+	s.mu.Lock()
+	s.cache = map[string]entry{}
+	s.mu.Unlock()
 }
 
 // Allows reports whether key may call model. Empty list = all models.
 // A trailing "*" matches by prefix, e.g. "openrouter/anthropic/*".
-func Allows(k *store.Key, model string) bool {
-	if len(k.AllowedModels) == 0 {
+func Allows(k *store.Key, model string) bool { return MatchModel(k.AllowedModels, model) }
+
+// MatchModel reports whether model matches any pattern: exact, "*", or a trailing "*" prefix.
+// An empty list matches everything.
+func MatchModel(patterns []string, model string) bool {
+	if len(patterns) == 0 {
 		return true
 	}
-	for _, p := range k.AllowedModels {
+	for _, p := range patterns {
 		if p == model || p == "*" {
 			return true
 		}

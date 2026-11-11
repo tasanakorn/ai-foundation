@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExpandEnv(t *testing.T) {
@@ -29,10 +30,25 @@ models:
 	}
 }
 
+func TestNATSDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(`admin: { listen: "off" }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := cfg.NATS
+	if n.URL != "nats://127.0.0.1:4222" || n.Usage.SubjectPrefix != "aif.usage.v1" || n.Usage.Stream != "AIF_USAGE" ||
+		!n.Usage.UseJetStream() || n.Control.SubjectPrefix != "aif.control.v1" || n.Hooks.PreRequest.Enabled() ||
+		n.Hooks.PreRequest.Timeout != 200*time.Millisecond {
+		t.Fatalf("nats defaults: %+v", n)
+	}
+}
+
 func TestExampleConfigLoads(t *testing.T) {
 	t.Setenv("AIF_MASTER_KEY", "0123456789abcdef0")
-	if _, err := Load("../../aif.example.yaml"); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{"../../aif.example.yaml", "../../aif.dev.yaml"} {
+		if _, err := Load(f); err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
 	}
 }
 
@@ -42,6 +58,8 @@ func TestValidate(t *testing.T) {
 		"unknown provider": "admin: {listen: \"off\"}\nmodels: [{name: m, provider: x}]",
 		"slash in name":    "admin: {listen: \"off\"}\nproviders: [{name: a/b, base_url: http://x}]",
 		"duplicate model":  "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x}]\nmodels: [{name: m, provider: p}, {name: m, provider: p}]",
+		"wildcard subject": "admin: {listen: \"off\"}\nnats: {usage: {subject_prefix: \"aif.*\"}}",
+		"empty token":      "admin: {listen: \"off\"}\nnats: {hooks: {pre_request: {subject: \"aif..hook\"}}}",
 	}
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {

@@ -5,12 +5,13 @@ Runs, with prefixed output:
            A failed build keeps the last good process running.
   web      Nuxt dev server (own hot reload). Proxies /admin/v1 to the gateway.
   llama    llama-server, only if LLAMA_MODEL (path to .gguf) or LLAMA_HF (HF repo) is set.
-  services With --services: Postgres + NATS via deploy/local/compose.yaml (left running on exit).
+  services Postgres + NATS via deploy/local/compose.yaml, left running on exit.
+           The gateway needs NATS. Use --no-services if you run NATS yourself (set NATS_URL).
 
 Environment: read from the shell, then from .env at the repo root (shell wins).
 
 Usage:
-  python scripts/dev.py [--services] [--no-web] [--no-llama]
+  python scripts/dev.py [--no-services] [--no-web] [--no-llama]
 """
 
 import argparse
@@ -153,14 +154,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--no-web", action="store_true", help="do not start the Nuxt dev server")
     ap.add_argument("--no-llama", action="store_true", help="do not start llama-server")
-    ap.add_argument("--services", action="store_true", help="also start Postgres + NATS with docker compose")
+    ap.add_argument("--no-services", action="store_true",
+                    help="do not start Postgres + NATS with docker compose (NATS must still be reachable)")
     args = ap.parse_args()
 
     DEV.mkdir(exist_ok=True)
     env = load_env()
     procs: list[Proc] = []
 
-    if args.services and not start_services(env):
+    if not args.no_services and not start_services(env):
+        log("dev", "the gateway needs NATS: fix Docker, or run NATS yourself and use --no-services")
         return 1
 
     # llama-server (optional)
@@ -216,7 +219,7 @@ def main() -> int:
     log("dev", "stopping...")
     for p in reversed(procs):
         p.stop()
-    if args.services:
+    if not args.no_services:
         log("dev", "Postgres + NATS keep running (make services-down to stop)")
     return 0
 
