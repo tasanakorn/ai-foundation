@@ -1,0 +1,37 @@
+# Dev config used by scripts/dev.py. Local only. Do not use in production.
+
+server:
+  listen: "127.0.0.1:8080"
+
+admin:
+  listen: "127.0.0.1:8081"
+  master_key: ${AIF_MASTER_KEY:-dev-master-key-0000}
+
+database:
+  driver: sqlite
+  dsn: ${AIF_DB:-aif.dev.db}
+
+metering:
+  flush_interval: 200ms
+
+passthrough: true
+
+providers:
+  - name: openrouter
+    type: openrouter
+    api_key: ${OPENROUTER_API_KEY}
+    headers:
+      X-Title: ai-foundation-dev
+
+  - name: llamacpp
+    type: openai
+    base_url: ${LLAMACPP_URL:-http://127.0.0.1:8090/v1}
+
+models:
+  - name: mini
+    provider: openrouter
+    upstream: openai/gpt-4o-mini
+
+  - name: local
+    provider: llamacpp
+    upstream: local            # scripts/dev.py starts llama-server with --alias local

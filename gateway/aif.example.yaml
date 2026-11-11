@@ -1,0 +1,67 @@
+# ai-foundation gateway config. Copy to aif.yaml and edit.
+# ${VAR} and ${VAR:-default} are read from the environment.
+
+server:
+  listen: ":8080"            # public OpenAI-compatible API
+  upstream_timeout: 10m      # max time for one upstream call (streams included)
+  max_body_bytes: 33554432   # 32 MiB
+
+admin:
+  listen: "127.0.0.1:8081"   # local admin API; "off" disables it
+  master_key: ${AIF_MASTER_KEY}
+  # ui_dir: ./web/.output/public   # serve the built web UI here
+
+database:
+  driver: sqlite
+  dsn: ${AIF_DB:-aif.db}
+
+metering:
+  buffer_size: 10000         # in-memory queue; records drop (and are counted) when full
+  batch_size: 200
+  flush_interval: 1s
+
+# Allow "<provider>/<upstream model>" for any model, e.g. "openrouter/anthropic/claude-sonnet-4.5".
+passthrough: true
+
+providers:
+  - name: openrouter
+    type: openrouter          # OpenAI-compatible; base_url defaults to https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+    headers:
+      X-Title: ai-foundation
+
+  - name: openai
+    type: openai
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+
+  # llama.cpp:  llama-server -m model.gguf --port 8090 --alias qwen
+  #             add "--embeddings --pooling mean" to serve /v1/embeddings
+  - name: llamacpp
+    type: openai
+    base_url: http://localhost:8090/v1
+
+  # vLLM:  vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000 --served-model-name qwen [--api-key ...]
+  - name: vllm
+    type: openai
+    base_url: http://localhost:8000/v1
+    api_key: ${VLLM_API_KEY:-}
+
+# Aliases. Clients send "name"; the gateway sends "upstream" to "provider".
+# price is USD per 1M tokens. If the provider reports cost (OpenRouter), that wins.
+models:
+  - name: gpt-4o-mini
+    provider: openai
+    price: { input: 0.15, output: 0.60, cached_input: 0.075 }
+
+  - name: fast
+    provider: openrouter
+    upstream: google/gemini-2.5-flash
+
+  - name: qwen-local
+    provider: llamacpp
+    upstream: qwen             # must match llama-server --alias
+
+  - name: qwen-gpu
+    provider: vllm
+    upstream: qwen             # must match vllm --served-model-name

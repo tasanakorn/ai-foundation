@@ -1,0 +1,41 @@
+# ai-foundation
+
+A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI agents.
+
+## 1. What it is
+
+1. A minimal core of what LiteLLM and OpenRouter do, in one small Go binary.
+2. One OpenAI-compatible API in front of many LLM providers.
+3. A base to build custom systems on (multi-tenant SaaS, internal AI platform, per-app billing).
+
+## 2. Goals
+
+1. **Light.** Low memory and CPU. One binary. No required external services.
+   1. Target: < 50 MB RAM at idle, < 5 ms added latency (p50) per request.
+2. **Connectivity.** Reach the major LLMs through:
+   1. OpenRouter (hundreds of models with one key).
+   2. Any direct OpenAI-compatible API (OpenAI, Groq, Together, vLLM, Ollama, LM Studio, …).
+3. **Metering.** Count tokens and cost for every request, including streams.
+4. **API keys.** Simple keys that are easy to map to tenants, apps, and end users.
+5. **Local admin.** Admin API on localhost by default. Web UI in Vue/Nuxt.
+6. **Extensible from outside.** New features live in separate services (any language) and talk to the core over REST or gRPC.
+7. **No big rewrites.** Start small, but put the seams (interfaces, contracts, schema) in place now.
+
+## 3. Non-goals (core)
+
+1. Not a full LiteLLM clone. No 100+ native provider SDKs in core.
+2. No built-in billing, invoicing, guardrails, prompt management, caching, or RAG in core. These are extensions.
+3. No user accounts or login system in core. The admin uses one master key. Identity systems sit on top.
+
+## 4. Personas
+
+| Persona          | Needs                                                               |
+| ---------------- | ------------------------------------------------------------------- |
+| App developer    | One endpoint and one key. Works with the OpenAI SDK.                |
+| Platform builder | Admin API to create keys per tenant/app. Usage data for billing.    |
+| Operator         | Small footprint, one config file, easy deploy, clear logs.          |
+
+## 5. Docs
+
+1. Architecture: [spec-0001](../specs/spec-0001-gateway-core-architecture.md).
+2. Work: [tasks index](../tasks/INDEX.md). Ideas: [backlog index](../backlogs/INDEX.md).

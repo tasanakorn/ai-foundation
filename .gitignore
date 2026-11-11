@@ -1,0 +1,16 @@
+# dev loop runtime data
+/.dev/
+.env
+
+# gateway
+/gateway/bin/
+/gateway/aif.yaml
+*.db
+*.db-shm
+*.db-wal
+
+# web
+/web/node_modules/
+/web/.nuxt/
+/web/.output/
+/web/dist
