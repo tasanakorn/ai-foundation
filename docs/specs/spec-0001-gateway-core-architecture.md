@@ -137,7 +137,7 @@ Packages live under `gateway/internal/`.
 | GET    | `/admin/v1/usage`         | Raw records. Filters: `from, to, key_id, tenant_id, app_id, end_user, model`         |
 | GET    | `/admin/v1/usage/summary` | Same filters + `group_by` = `none, day, model, provider, key, tenant, app, end_user` |
 
-1. Listens on `127.0.0.1` by default ("local admin"). Exposing it is an explicit config change.
+1. Listens on `127.0.0.1:8081` by default. Not enforced: set `admin.listen` (or `AIF_ADMIN_LISTEN`) to e.g. `0.0.0.0:8081` for public access. The gateway logs a warning when it is not loopback. Use TLS in front.
 2. Master key is required (min 16 chars). Constant-time compare.
 3. If `admin.ui_dir` is set, the built web UI is served at `/` with SPA fallback (same origin, no CORS).
 
@@ -214,7 +214,7 @@ Subjects are set in config (`nats.*`). Defaults:
 | D5  | SQLite via `modernc.org/sqlite` (pure Go, WAL)      | Zero setup, no CGO, cross-compiles. `Store` interface keeps Postgres open.                                                                         |
 | D6  | Free-form `tenant_id` / `app_id` labels             | Multi-tenant ready without forcing a tenant model on builders                                                                                      |
 | D7  | Async batched metering with pluggable sinks         | No DB write on the hot path; webhook/queue sinks slot in                                                                                           |
-| D8  | Separate admin listener on localhost                | Safe default; public port never exposes admin                                                                                                      |
+| D8  | Separate admin listener, localhost by default       | Safe default; public port never exposes admin. Switch to public with `admin.listen` / `AIF_ADMIN_LISTEN`                                           |
 | D9  | Extensions over REST/gRPC, not Go plugins           | Any language; crash isolation; independent deploy                                                                                                  |
 | D10 | Web UI = static Nuxt build served by admin listener | One origin, no CORS, UI is optional and replaceable                                                                                                |
 | D11 | Monorepo, one folder per part                       | Fast dev loop; each part still builds alone and can split out later                                                                                |

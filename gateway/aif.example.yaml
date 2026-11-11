@@ -2,12 +2,14 @@
 # ${VAR} and ${VAR:-default} are read from the environment.
 
 server:
-  listen: ":8080"            # public OpenAI-compatible API
+  listen: ${AIF_LISTEN:-:8080}   # public OpenAI-compatible API
   upstream_timeout: 10m      # max time for one upstream call (streams included)
   max_body_bytes: 33554432   # 32 MiB
 
 admin:
-  listen: "127.0.0.1:8081"   # local admin API; "off" disables it
+  # Admin API (+ web UI). Default: localhost only. Public: AIF_ADMIN_LISTEN=0.0.0.0:8081 (or ":8081").
+  # "off" disables it. Put TLS in front (reverse proxy) when it is public.
+  listen: ${AIF_ADMIN_LISTEN:-127.0.0.1:8081}
   master_key: ${AIF_MASTER_KEY}
   # ui_dir: ./web/.output/public   # serve the built web UI here
 

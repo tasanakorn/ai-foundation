@@ -69,6 +69,9 @@ func run(cfgPath string, log *slog.Logger) error {
 
 	servers := []*http.Server{{Addr: cfg.Server.Listen, Handler: a.Public, ReadHeaderTimeout: 10 * time.Second}}
 	if a.Admin != nil {
+		if !config.IsLoopback(cfg.Admin.Listen) {
+			log.Warn("admin API is reachable from the network; use a strong master key and TLS", "addr", cfg.Admin.Listen)
+		}
 		servers = append(servers, &http.Server{Addr: cfg.Admin.Listen, Handler: a.Admin, ReadHeaderTimeout: 10 * time.Second})
 	}
 

@@ -85,4 +85,4 @@ make build    # web/.output/public + gateway/bin/aif
 1. Copy `gateway/aif.example.yaml` to `aif.yaml` and edit it.
 2. Run NATS with JetStream (`nats-server --jetstream`) and set `nats.url`.
 3. Set `admin.ui_dir` to the built `web/.output/public` to serve the UI on the admin port.
-4. `aif serve -config aif.yaml`. The admin port listens on localhost only by default. `/healthz` is 503 while NATS is down.
+4. `aif serve -config aif.yaml`. The admin port listens on `127.0.0.1:8081` by default; set `AIF_ADMIN_LISTEN=0.0.0.0:8081` (or `admin.listen`) for public access, behind TLS. `/healthz` is 503 while NATS is down.

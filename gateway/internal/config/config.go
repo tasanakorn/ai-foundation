@@ -32,7 +32,8 @@ type Server struct {
 	MaxBodyBytes    int64         `yaml:"max_body_bytes"`
 }
 
-// Admin is the local admin API (and optional web UI). Set Listen to "off" to disable it.
+// Admin is the admin API (and optional web UI). It listens on localhost by default;
+// any address works (e.g. "0.0.0.0:8081" for public access). "off" disables it.
 type Admin struct {
 	Listen    string `yaml:"listen"`
 	MasterKey string `yaml:"master_key"`
@@ -278,4 +279,18 @@ func validSubject(s string) bool {
 		}
 	}
 	return true
+}
+
+// IsLoopback reports whether a listen address only accepts local connections.
+// An empty host (":8081") listens on all interfaces.
+func IsLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

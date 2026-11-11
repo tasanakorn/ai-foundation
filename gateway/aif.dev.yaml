@@ -1,10 +1,10 @@
 # Dev config used by scripts/dev.py. Local only. Do not use in production.
 
 server:
-  listen: "127.0.0.1:8080"
+  listen: ${AIF_LISTEN:-127.0.0.1:8080}
 
 admin:
-  listen: "127.0.0.1:8081"
+  listen: ${AIF_ADMIN_LISTEN:-127.0.0.1:8081}
   master_key: ${AIF_MASTER_KEY:-dev-master-key-0000}
 
 database:
