@@ -29,6 +29,7 @@ type Handler struct {
 	auth         *auth.Service
 	st           store.Store
 	router       *router.Router
+	public       http.Handler
 	masterKey    string
 	cookieSecure string
 	uiDir        string
@@ -40,14 +41,15 @@ type Options struct {
 	Auth         *auth.Service
 	Store        store.Store
 	Router       *router.Router
-	MasterKey    string // optional; "" turns bearer master-key access off
+	Public       http.Handler // the /v1 handler, for the playground
+	MasterKey    string       // optional; "" turns bearer master-key access off
 	CookieSecure string // auto, always, never
 	UIDir        string
 	Log          *slog.Logger
 }
 
 func New(o Options) *Handler {
-	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, router: o.Router, masterKey: o.MasterKey,
+	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, router: o.Router, public: o.Public, masterKey: o.MasterKey,
 		cookieSecure: o.CookieSecure, uiDir: o.UIDir, log: o.Log}
 }
 
@@ -69,6 +71,12 @@ func (h *Handler) Routes() http.Handler {
 	api("GET /admin/v1/users/{id}", h.getUser)
 	api("PATCH /admin/v1/users/{id}", h.updateUser)
 	api("DELETE /admin/v1/users/{id}", h.deleteUser)
+
+	// Playground: any role; it changes no admin state and needs a real API key.
+	self("POST /admin/v1/playground/chat/completions", h.playground)
+	self("POST /admin/v1/playground/completions", h.playground)
+	self("POST /admin/v1/playground/embeddings", h.playground)
+	self("GET /admin/v1/playground/models", h.playground)
 
 	api("GET /admin/v1/keys", h.listKeys)
 	api("POST /admin/v1/keys", h.createKey)
@@ -150,7 +158,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 func usageFilter(r *http.Request) (store.UsageFilter, error) {
 	q := r.URL.Query()
 	f := store.UsageFilter{
-		KeyID: q.Get("key_id"), TenantID: q.Get("tenant_id"), AppID: q.Get("app_id"),
+		ID: q.Get("id"), KeyID: q.Get("key_id"), TenantID: q.Get("tenant_id"), AppID: q.Get("app_id"),
 		EndUser: q.Get("end_user"), Model: q.Get("model"),
 		Limit: atoi(q.Get("limit")), Offset: atoi(q.Get("offset")),
 	}

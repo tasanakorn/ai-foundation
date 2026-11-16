@@ -84,7 +84,7 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		if err := a.bootstrapAdmin(ctx, cfg.Admin, log); err != nil {
 			return nil, err
 		}
-		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Router,
+		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Router, Public: a.Public,
 			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir, Log: log}).Routes()
 	}
 	return a, nil

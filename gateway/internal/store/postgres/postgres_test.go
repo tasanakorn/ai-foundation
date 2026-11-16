@@ -180,6 +180,7 @@ func TestUsage(t *testing.T) {
 		{store.UsageFilter{TenantID: "acme"}, 2},
 		{store.UsageFilter{TenantID: "acme", AppID: "chat", KeyID: "k1"}, 2},
 		{store.UsageFilter{EndUser: "u1"}, 1},
+		{store.UsageFilter{ID: "r2"}, 1},
 		{store.UsageFilter{Model: "small"}, 2},
 		{store.UsageFilter{From: day2}, 2},
 		{store.UsageFilter{To: day2}, 1},

@@ -74,6 +74,7 @@ type UsageRecord struct {
 type UsageFilter struct {
 	From     time.Time // inclusive; zero = no bound
 	To       time.Time // exclusive; zero = no bound
+	ID       string    // one request (X-Request-Id)
 	KeyID    string
 	TenantID string
 	AppID    string

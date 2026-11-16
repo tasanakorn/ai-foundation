@@ -280,6 +280,9 @@ func usageWhere(f store.UsageFilter) *where {
 	if !f.To.IsZero() {
 		w.add("created_at < ?", f.To)
 	}
+	if f.ID != "" {
+		w.add("id = ?", f.ID)
+	}
 	if f.KeyID != "" {
 		w.add("key_id = ?", f.KeyID)
 	}

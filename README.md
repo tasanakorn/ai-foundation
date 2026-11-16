@@ -48,7 +48,8 @@ make dev                 # Postgres + NATS (Docker), then gateway + web (+ llama
 2. llama.cpp runs natively, not in Docker: on macOS, Docker cannot use the Metal GPU.
 3. The gateway needs PostgreSQL and NATS and exits at startup without them.
 4. Running them yourself: `python scripts/dev.py --no-services` with `DATABASE_URL` and `NATS_URL` set.
-5. The dev admin account is created on the first start only (`AIF_ADMIN_EMAIL`, `AIF_ADMIN_PASSWORD`). Manage accounts on the Admins page or with `aif admin create-user | reset-password | list-users`.
+5. **Playground** (admin UI → Playground): paste an API key, pick a model, and chat with streaming. Each message takes the real `/v1` path and shows tokens, time to first token, cost and the request ID.
+6. The dev admin account is created on the first start only (`AIF_ADMIN_EMAIL`, `AIF_ADMIN_PASSWORD`). Manage accounts on the Admins page or with `aif admin create-user | reset-password | list-users`.
 
 Dev models (`gateway/aif.dev.yaml`): `mini` → OpenRouter `openai/gpt-4o-mini`, `local` → llama.cpp. Passthrough is on, so `openrouter/<any model>` works too.
 

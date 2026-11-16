@@ -74,7 +74,7 @@ Packages live under `gateway/internal/`.
 | `metering` | Usage parse, cost, `Recorder`, `Sink` interface           | Webhook / queue / gRPC sinks        |
 | `store`    | `Store` interface; `postgres` impl (pgx)                  | Partitioned usage, rollups          |
 | `auth`     | Admin accounts, argon2id passwords, sessions, roles       | Outside logins (OIDC, SSO)          |
-| `admin`    | Admin REST, sign-in, static UI hosting                    | More resources (tenants, budgets)   |
+| `admin`    | Admin REST, sign-in, playground, static UI hosting        | More resources (tenants, budgets)   |
 
 ## 4. Data model
 
@@ -130,27 +130,35 @@ Packages live under `gateway/internal/`.
 
 ## 6. Admin API (`/admin/v1`)
 
-| Method | Path                      | Notes                                                                                |
-| ------ | ------------------------- | ------------------------------------------------------------------------------------ |
-| POST   | `/admin/v1/auth/login`    | No auth. `{email, password}` → `{user, role, method}` + session cookie               |
-| POST   | `/admin/v1/auth/logout`   | Ends the session, clears the cookie                                                  |
-| GET    | `/admin/v1/auth/me`       | Any role. `{user, role, method}`; `user` is null for the master key                  |
-| POST   | `/admin/v1/auth/password` | Any role, own account. `{current_password, new_password}`; ends other sessions       |
-| GET    | `/admin/v1/users`         | Admin accounts                                                                       |
-| POST   | `/admin/v1/users`         | `{email, name, role, password}`                                                      |
-| GET    | `/admin/v1/users/{id}`    |                                                                                      |
-| PATCH  | `/admin/v1/users/{id}`    | Any of `{name, role, disabled, password}`. Disable or password set ends its sessions |
-| DELETE | `/admin/v1/users/{id}`    | Hard delete; its sessions go with it                                                 |
-| GET    | `/admin/v1/keys`          | `tenant_id`, `app_id`, `include_revoked`, `limit`, `offset`                          |
-| POST   | `/admin/v1/keys`          | `{name, tenant_id, app_id, allowed_models, metadata, expires_at}`                    |
-| GET    | `/admin/v1/keys/{id}`     |                                                                                      |
-| DELETE | `/admin/v1/keys/{id}`     | Revoke (soft)                                                                        |
-| GET    | `/admin/v1/models`        | Aliases, providers, passthrough flag. No secrets.                                    |
-| GET    | `/admin/v1/usage`         | Raw records. Filters: `from, to, key_id, tenant_id, app_id, end_user, model`         |
-| GET    | `/admin/v1/usage/summary` | Same filters + `group_by` = `none, day, model, provider, key, tenant, app, end_user` |
+| Method | Path                      | Notes                                                                                                                      |
+| ------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/admin/v1/auth/login`    | No auth. `{email, password}` → `{user, role, method}` + session cookie                                                     |
+| POST   | `/admin/v1/auth/logout`   | Ends the session, clears the cookie                                                                                        |
+| GET    | `/admin/v1/auth/me`       | Any role. `{user, role, method}`; `user` is null for the master key                                                        |
+| POST   | `/admin/v1/auth/password` | Any role, own account. `{current_password, new_password}`; ends other sessions                                             |
+| GET    | `/admin/v1/users`         | Admin accounts                                                                                                             |
+| POST   | `/admin/v1/users`         | `{email, name, role, password}`                                                                                            |
+| GET    | `/admin/v1/users/{id}`    |                                                                                                                            |
+| PATCH  | `/admin/v1/users/{id}`    | Any of `{name, role, disabled, password}`. Disable or password set ends its sessions                                       |
+| DELETE | `/admin/v1/users/{id}`    | Hard delete; its sessions go with it                                                                                       |
+| GET    | `/admin/v1/keys`          | `tenant_id`, `app_id`, `include_revoked`, `limit`, `offset`                                                                |
+| POST   | `/admin/v1/keys`          | `{name, tenant_id, app_id, allowed_models, metadata, expires_at}`                                                          |
+| GET    | `/admin/v1/keys/{id}`     |                                                                                                                            |
+| DELETE | `/admin/v1/keys/{id}`     | Revoke (soft)                                                                                                              |
+| GET    | `/admin/v1/models`        | Aliases, providers, passthrough flag. No secrets.                                                                          |
+| GET    | `/admin/v1/usage`         | Raw records. Filters: `from, to, id, key_id, tenant_id, app_id, end_user, model`                                           |
+| *      | `/admin/v1/playground/…`  | Any role. Runs `/v1/{chat/completions, completions, embeddings, models}` in-process with the API key in `X-AIF-Key` (§6.2) |
+| GET    | `/admin/v1/usage/summary` | Same filters + `group_by` = `none, day, model, provider, key, tenant, app, end_user`                                       |
 
 1. Listens on `127.0.0.1:8081` by default. Not enforced: set `admin.listen` (or `AIF_ADMIN_LISTEN`) to e.g. `0.0.0.0:8081` for public access. The gateway logs a warning when it is not loopback. Use TLS in front.
 2. If `admin.ui_dir` is set, the built web UI is served at `/` with SPA fallback (same origin, no CORS).
+
+### 6.2 Playground
+
+1. Lets a person test the gateway as a client from the admin UI, without CORS on the public port.
+2. The admin route rewrites the path to `/v1/…`, sets `Authorization: Bearer <X-AIF-Key>`, strips the admin cookie and other credentials, and calls the public handler in-process.
+3. So the request takes the full client path: key auth, allow-list, hook, upstream, streaming, metering. It is metered to that API key like any request.
+4. It needs a signed-in admin (any role) and a real API key; the CSRF check applies.
 
 ### 6.1 Admin sign-in (D16)
 
