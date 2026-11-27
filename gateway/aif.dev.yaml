@@ -13,7 +13,7 @@ server:
 admin:
   listen: ${AIF_ADMIN_LISTEN:-127.0.0.1:8081}
   master_key: ${AIF_MASTER_KEY:-dev-master-key-0000}
-  bootstrap:   # first start only; sign in to the UI with this
+  bootstrap:   # the local account; sign in to the UI with this
     email: ${AIF_ADMIN_EMAIL:-admin@example.com}
     password: ${AIF_ADMIN_PASSWORD:-dev-admin-password}
     name: Dev Admin

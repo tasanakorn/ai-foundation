@@ -143,6 +143,16 @@ func TestOIDCConfig(t *testing.T) {
 	}
 }
 
+// A hash from the environment survives ${VAR} expansion and YAML (it has $ and commas).
+func TestPasswordHashFromEnv(t *testing.T) {
+	const hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo+/"
+	t.Setenv("AIF_TEST_HASH", hash)
+	c, err := Parse([]byte("database: {url: \"postgres://x\"}\nadmin:\n  bootstrap:\n    email: a@b.c\n    password_hash: ${AIF_TEST_HASH:-}\n"))
+	if err != nil || c.Admin.Bootstrap.PasswordHash != hash {
+		t.Fatalf("%v %q", err, c.Admin.Bootstrap.PasswordHash)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	const db = "database: {url: \"postgres://x\"}\n"
 	if _, err := Parse([]byte(db)); err != nil {
