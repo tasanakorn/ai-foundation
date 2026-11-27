@@ -2,7 +2,7 @@
 
 A small, fast LLM gateway. Think "minimal LiteLLM / OpenRouter core" in one Go binary.
 
-1. One OpenAI-compatible API in front of OpenRouter and local LLMs (llama.cpp, vLLM).
+1. One OpenAI-compatible API in front of OpenRouter, Anthropic (Claude API) and local LLMs (llama.cpp, vLLM).
 2. API keys with owner labels (tenant, app, end user).
 3. Token and cost metering per request, including streams.
 4. Built-in admin accounts (email + password, admin / viewer roles), admin API and web UI.

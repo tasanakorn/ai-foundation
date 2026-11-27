@@ -32,6 +32,25 @@ models:
 	}
 }
 
+func TestAnthropicDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(`
+admin: { listen: "off" }
+database: { url: "postgres://x" }
+providers:
+  - { name: anthropic, type: anthropic, openai_format: compat, workspace_id: wrkspc_1 }
+  - { name: proxy, type: anthropic, openai_format: compat, base_url: "http://127.0.0.1:9000/v1/" }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.Providers[0]; p.BaseURL != anthropicBaseURL || p.WorkspaceID != "wrkspc_1" || p.OpenAIFormat != OpenAIFormatCompat {
+		t.Fatalf("anthropic defaults: %+v", p)
+	}
+	if p := cfg.Providers[1]; p.BaseURL != "http://127.0.0.1:9000/v1" {
+		t.Fatalf("custom base_url: %q", p.BaseURL)
+	}
+}
+
 func TestNATSDefaults(t *testing.T) {
 	cfg, err := Parse([]byte(`{admin: { listen: "off" }, database: { url: "postgres://x" }}`))
 	if err != nil {
@@ -61,20 +80,25 @@ func TestValidate(t *testing.T) {
 		t.Fatalf("minimal config must load: %v", err)
 	}
 	cases := map[string]string{
-		"no database url":    `providers: []`,
-		"sqlite driver":      "database: {url: \"postgres://x\", driver: sqlite}",
-		"old dsn":            "database: {url: \"postgres://x\", dsn: aif.db}",
-		"pool sizes":         "database: {url: \"postgres://x\", max_conns: 2, min_conns: 3}",
-		"short master key":   db + "admin: {master_key: short}",
-		"cookie_secure":      db + "admin: {cookie_secure: sometimes}",
-		"session_ttl":        db + "admin: {session_ttl: 1s}",
-		"bootstrap password": db + "admin: {bootstrap: {email: a@b.c, password: short}}",
-		"bootstrap email":    db + "admin: {bootstrap: {email: nope, password: long-enough-password}}",
-		"unknown provider":   db + "admin: {listen: \"off\"}\nmodels: [{name: m, provider: x}]",
-		"slash in name":      db + "admin: {listen: \"off\"}\nproviders: [{name: a/b, base_url: http://x}]",
-		"duplicate model":    db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x}]\nmodels: [{name: m, provider: p}, {name: m, provider: p}]",
-		"wildcard subject":   db + "admin: {listen: \"off\"}\nnats: {usage: {subject_prefix: \"aif.*\"}}",
-		"empty token":        db + "admin: {listen: \"off\"}\nnats: {hooks: {pre_request: {subject: \"aif..hook\"}}}",
+		"no database url":            `providers: []`,
+		"sqlite driver":              "database: {url: \"postgres://x\", driver: sqlite}",
+		"old dsn":                    "database: {url: \"postgres://x\", dsn: aif.db}",
+		"pool sizes":                 "database: {url: \"postgres://x\", max_conns: 2, min_conns: 3}",
+		"short master key":           db + "admin: {master_key: short}",
+		"cookie_secure":              db + "admin: {cookie_secure: sometimes}",
+		"session_ttl":                db + "admin: {session_ttl: 1s}",
+		"bootstrap password":         db + "admin: {bootstrap: {email: a@b.c, password: short}}",
+		"bootstrap email":            db + "admin: {bootstrap: {email: nope, password: long-enough-password}}",
+		"unknown provider":           db + "admin: {listen: \"off\"}\nmodels: [{name: m, provider: x}]",
+		"slash in name":              db + "admin: {listen: \"off\"}\nproviders: [{name: a/b, base_url: http://x}]",
+		"duplicate model":            db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x}]\nmodels: [{name: m, provider: p}, {name: m, provider: p}]",
+		"wildcard subject":           db + "admin: {listen: \"off\"}\nnats: {usage: {subject_prefix: \"aif.*\"}}",
+		"anthropic no openai_format": db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic}]",
+		"anthropic native (later)":   db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic, openai_format: native}]",
+		"anthropic bad format":       db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic, openai_format: magic}]",
+		"openai_format on openai":    db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x, openai_format: compat}]",
+		"workspace_id on openai":     db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x, workspace_id: w}]",
+		"empty token":                db + "admin: {listen: \"off\"}\nnats: {hooks: {pre_request: {subject: \"aif..hook\"}}}",
 	}
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {

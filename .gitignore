@@ -1,6 +1,8 @@
 # dev loop runtime data
 /.dev/
 .env
+# local secrets (API keys)
+/secrets/
 
 # gateway
 /gateway/bin/

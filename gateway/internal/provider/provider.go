@@ -44,8 +44,10 @@ func Build(cfgs []config.Provider, client *http.Client) (map[string]Provider, er
 	out := make(map[string]Provider, len(cfgs))
 	for _, c := range cfgs {
 		switch c.Type {
-		case "openai", "openrouter":
+		case config.TypeOpenAI, config.TypeOpenRouter:
 			out[c.Name] = NewOpenAI(c, client)
+		case config.TypeAnthropic:
+			out[c.Name] = NewAnthropic(c, client)
 		default:
 			return nil, fmt.Errorf("provider %q: unsupported type %q", c.Name, c.Type)
 		}
@@ -79,6 +81,43 @@ func (p *OpenAI) Do(ctx context.Context, endpoint string, body []byte) (*http.Re
 	}
 	for k, v := range p.headers {
 		req.Header.Set(k, v)
+	}
+	return p.client.Do(req)
+}
+
+// Anthropic is the Claude API (spec-0002 section 5). With openai_format "compat", OpenAI-format
+// requests go to Anthropic's OpenAI-compatible endpoint (base_url + endpoint), so the body passes
+// through as for any OpenAI-compatible provider. Auth uses x-api-key, never Authorization.
+type Anthropic struct {
+	name        string
+	baseURL     string
+	apiKey      string
+	workspaceID string
+	headers     map[string]string
+	client      *http.Client
+}
+
+func NewAnthropic(c config.Provider, client *http.Client) *Anthropic {
+	return &Anthropic{name: c.Name, baseURL: c.BaseURL, apiKey: c.APIKey, workspaceID: c.WorkspaceID, headers: c.Headers, client: client}
+}
+
+func (p *Anthropic) Name() string { return p.name }
+
+func (p *Anthropic) Do(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range p.headers {
+		req.Header.Set(k, v)
+	}
+	// Set auth last so custom headers cannot replace it.
+	if p.apiKey != "" {
+		req.Header.Set("X-Api-Key", p.apiKey)
+	}
+	if p.workspaceID != "" {
+		req.Header.Set("Anthropic-Workspace-Id", p.workspaceID)
 	}
 	return p.client.Do(req)
 }

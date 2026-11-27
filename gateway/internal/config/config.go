@@ -116,11 +116,26 @@ func (h Hook) Enabled() bool { return h.Subject != "" }
 
 type Provider struct {
 	Name    string            `yaml:"name"`
-	Type    string            `yaml:"type"`
+	Type    string            `yaml:"type"` // openai (default), openrouter, anthropic
 	BaseURL string            `yaml:"base_url"`
 	APIKey  string            `yaml:"api_key"`
 	Headers map[string]string `yaml:"headers"`
+
+	// Anthropic only (spec-0002 section 5).
+	WorkspaceID  string `yaml:"workspace_id"`  // sent as anthropic-workspace-id; only for keys not scoped to one workspace
+	OpenAIFormat string `yaml:"openai_format"` // required: how OpenAI-format requests reach Anthropic (compat)
 }
+
+// Provider types.
+const (
+	TypeOpenAI     = "openai"
+	TypeOpenRouter = "openrouter"
+	TypeAnthropic  = "anthropic"
+)
+
+// OpenAIFormatCompat sends OpenAI-format requests to Anthropic's OpenAI-compatible endpoint.
+// "native" (gateway-side translation) arrives with task-0009.
+const OpenAIFormatCompat = "compat"
 
 type Model struct {
 	Name     string `yaml:"name"`
@@ -136,7 +151,10 @@ type Price struct {
 	CachedInput float64 `yaml:"cached_input" json:"cached_input"`
 }
 
-const openRouterBaseURL = "https://openrouter.ai/api/v1"
+const (
+	openRouterBaseURL = "https://openrouter.ai/api/v1"
+	anthropicBaseURL  = "https://api.anthropic.com/v1"
+)
 
 // Load reads a YAML file, expands ${VAR} and ${VAR:-default}, applies defaults and validates.
 func Load(path string) (*Config, error) {
@@ -228,10 +246,15 @@ func (c *Config) applyDefaults() {
 	for i := range c.Providers {
 		p := &c.Providers[i]
 		if p.Type == "" {
-			p.Type = "openai"
+			p.Type = TypeOpenAI
 		}
-		if p.Type == "openrouter" && p.BaseURL == "" {
-			p.BaseURL = openRouterBaseURL
+		if p.BaseURL == "" {
+			switch p.Type {
+			case TypeOpenRouter:
+				p.BaseURL = openRouterBaseURL
+			case TypeAnthropic:
+				p.BaseURL = anthropicBaseURL
+			}
 		}
 		p.BaseURL = strings.TrimRight(p.BaseURL, "/")
 	}
@@ -294,10 +317,13 @@ func (c *Config) validate() error {
 			return fmt.Errorf("provider %q: name must not contain '/'", p.Name)
 		case providers[p.Name]:
 			return fmt.Errorf("provider %q defined twice", p.Name)
-		case p.Type != "openai" && p.Type != "openrouter":
-			return fmt.Errorf("provider %q: type %q is not supported (supported: openai, openrouter)", p.Name, p.Type)
+		case p.Type != TypeOpenAI && p.Type != TypeOpenRouter && p.Type != TypeAnthropic:
+			return fmt.Errorf("provider %q: type %q is not supported (supported: openai, openrouter, anthropic)", p.Name, p.Type)
 		case p.BaseURL == "":
 			return fmt.Errorf("provider %q: base_url is required", p.Name)
+		}
+		if err := p.validateAnthropic(); err != nil {
+			return err
 		}
 		providers[p.Name] = true
 	}
@@ -314,6 +340,25 @@ func (c *Config) validate() error {
 		models[m.Name] = true
 	}
 	return nil
+}
+
+func (p Provider) validateAnthropic() error {
+	if p.Type != TypeAnthropic {
+		if p.OpenAIFormat != "" || p.WorkspaceID != "" {
+			return fmt.Errorf("provider %q: openai_format and workspace_id are only for type anthropic", p.Name)
+		}
+		return nil
+	}
+	switch p.OpenAIFormat {
+	case OpenAIFormatCompat:
+		return nil
+	case "":
+		return fmt.Errorf("provider %q: openai_format is required for type anthropic (use %q: Anthropic's OpenAI-compatible endpoint)", p.Name, OpenAIFormatCompat)
+	case "native":
+		return fmt.Errorf("provider %q: openai_format native is not available yet; use %q", p.Name, OpenAIFormatCompat)
+	default:
+		return fmt.Errorf("provider %q: openai_format %q is not supported (use %q)", p.Name, p.OpenAIFormat, OpenAIFormatCompat)
+	}
 }
 
 // validSubject accepts a literal NATS subject: dot-separated, non-empty tokens, no wildcards or spaces.
