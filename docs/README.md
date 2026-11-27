@@ -34,9 +34,6 @@ All project documentation. Each folder has its own `README.md` with its rules.
 | `tasks/task-0012-add-gpu-node-pool.md`        | Twelfth task                |
 | `backlogs/backlog-0007-cost-dashboard.md`     | Backlog uses kind `backlog` |
 
-## 4. Typical flow
+## 4. Workflow
 
-1. Idea → `backlogs/backlog-<nnnn>-*`.
-2. Accepted idea → `specs/spec-<nnnn>-*` (links back to the backlog item).
-3. Spec split into work → `tasks/task-<nnnn>-*` (each links to its spec).
-4. Shipped change → `changes/change-<nnnn>-*` (links to its spec and tasks).
+Follow [workflow.md](workflow.md): every change starts with a change document (`draft`), then the product and spec documents, then the tasks, then the code. Ideas that are not scheduled go to `backlogs/`.
