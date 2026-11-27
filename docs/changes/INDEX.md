@@ -14,3 +14,4 @@
 | [change-0010](change-0010-ci-checks.md)                        | CI checks on pull requests           | applied | 2026-11-27 |
 | [change-0011](change-0011-product-doc-services.md)             | Product doc: required services       | applied | 2026-11-27 |
 | [change-0012](change-0012-shared-account-state.md)             | Shared account state across nodes    | applied | 2026-11-27 |
+| [change-0013](change-0013-oidc-admin-login.md)                 | OIDC admin login                     | draft   | 2026-11-27 |
