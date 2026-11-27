@@ -39,7 +39,25 @@ providers:
     type: openai
     base_url: ${LLAMACPP_URL:-http://127.0.0.1:8090/v1}
 
+  # Claude API: OpenAI format at /v1, Anthropic format at /anthropic (spec-0002).
+  - name: anthropic
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    openai_format: compat
+
 models:
+  - name: claude-opus-5-5
+    provider: anthropic
+    price: { input: 4.00, output: 20.00, cached_input: 0.20 }
+
+  - name: claude-sonnet-5-5
+    provider: anthropic
+    price: { input: 2.00, output: 10.00, cached_input: 0.10 }
+
+  - name: claude-haiku-5-5
+    provider: anthropic
+    price: { input: 0.10, output: 0.50 }
+
   - name: mini
     provider: openrouter
     upstream: openai/gpt-4o-mini

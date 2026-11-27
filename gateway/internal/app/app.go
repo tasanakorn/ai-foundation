@@ -30,8 +30,9 @@ type App struct {
 	Recorder *metering.Recorder
 	Bus      *bus.Bus
 
-	Public http.Handler // OpenAI-compatible API
-	Admin  http.Handler // nil when admin.listen is off
+	Public    http.Handler // OpenAI API (/v1, /openai/v1) and Anthropic API (/anthropic)
+	Anthropic http.Handler // Anthropic API at the root, for server.anthropic.listen
+	Admin     http.Handler // nil when admin.listen is off
 }
 
 // New builds one gateway node. The caller owns st and nb and closes them after Close.
@@ -59,8 +60,8 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 
 	var preHook hook.Hook
 	if h := cfg.NATS.Hooks.PreRequest; h.Enabled() {
-		preHook = hook.Guard(nb.PreRequestHook(h.Subject), hook.Policy{Timeout: h.Timeout, FailOpen: h.FailOpen, Models: h.Models}, log)
-		log.Info("pre-request hook on", "subject", h.Subject, "timeout", h.Timeout, "fail_open", h.FailOpen)
+		preHook = hook.Guard(nb.PreRequestHook(h.Subject), hook.Policy{Timeout: h.Timeout, FailOpen: h.FailOpen, Models: h.Models, Formats: h.Formats}, log)
+		log.Info("pre-request hook on", "subject", h.Subject, "timeout", h.Timeout, "fail_open", h.FailOpen, "formats", h.Formats)
 	}
 
 	ready := func() error {
@@ -76,10 +77,12 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		}
 		return nil
 	}
-	a.Public = gateway.New(gateway.Options{
+	gw := gateway.New(gateway.Options{
 		Router: a.Router, Keys: a.Keys, Recorder: a.Recorder, Hook: preHook, Ready: ready, Log: log,
 		MaxBodyBytes: cfg.Server.MaxBodyBytes, UpstreamTimeout: cfg.Server.UpstreamTimeout,
-	}).Routes()
+		AnthropicPrefix: cfg.Server.Anthropic.Prefix(),
+	})
+	a.Public, a.Anthropic = gw.Routes(), gw.AnthropicRoutes()
 	if cfg.Admin.Enabled() {
 		if err := a.bootstrapAdmin(ctx, cfg.Admin, log); err != nil {
 			return nil, err

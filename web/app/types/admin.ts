@@ -48,7 +48,15 @@ export interface UsageRecord {
   estimated: boolean
   latency_ms: number
   error?: string
+  /** Anthropic prompt-cache writes; part of prompt_tokens (spec-0002 D20) */
+  cache_write_tokens: number
+  /** API format the client used */
+  format: ApiFormat
+  /** Claude Code session (x-claude-code-session-id), when sent */
+  session_id?: string
 }
+
+export type ApiFormat = 'openai' | 'anthropic'
 
 export interface UsageSummary {
   group: string
@@ -66,8 +74,10 @@ export interface ModelInfo {
   id: string
   provider: string
   upstream: string
-  /** USD per 1M tokens */
-  price?: { input: number, output: number, cached_input: number }
+  /** USD per 1M tokens. cache_write defaults to 1.25 x input when absent. */
+  price?: { input: number, output: number, cached_input: number, cache_write?: number }
+  /** API formats that may use this alias */
+  formats: ApiFormat[]
 }
 
 export interface ModelsResponse {

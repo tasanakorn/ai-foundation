@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"ai-foundation/gateway/internal/keys"
@@ -34,6 +35,7 @@ type Request struct {
 	Stream        bool            `json:"stream"`
 	Body          json.RawMessage `json:"body"`                   // the client's request body, unchanged
 	BodyOmitted   bool            `json:"body_omitted,omitempty"` // body too big for the transport
+	Format        string          `json:"format"`                 // client API format: openai or anthropic (spec-0002)
 }
 
 type Key struct {
@@ -70,6 +72,7 @@ type Policy struct {
 	Timeout  time.Duration
 	FailOpen bool
 	Models   []string // key allow-list patterns; empty = all
+	Formats  []string // API formats sent to the hook; empty = [openai]. Others are allowed without asking.
 }
 
 // Guard wraps a transport with the shared policy: model filter, timeout, reply checks,
@@ -84,6 +87,13 @@ type guard struct {
 
 func (g *guard) PreRequest(ctx context.Context, req *Request) (*Decision, error) {
 	if !keys.MatchModel(g.policy.Models, req.Model) {
+		return allowAll, nil
+	}
+	formats := g.policy.Formats
+	if len(formats) == 0 {
+		formats = []string{"openai"}
+	}
+	if !slices.Contains(formats, req.Format) {
 		return allowAll, nil
 	}
 	if g.policy.Timeout > 0 {

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,10 +28,39 @@ type Config struct {
 }
 
 type Server struct {
-	Listen          string        `yaml:"listen"`
-	UpstreamTimeout time.Duration `yaml:"upstream_timeout"`
-	MaxBodyBytes    int64         `yaml:"max_body_bytes"`
+	Listen          string          `yaml:"listen"`
+	UpstreamTimeout time.Duration   `yaml:"upstream_timeout"`
+	MaxBodyBytes    int64           `yaml:"max_body_bytes"`
+	Anthropic       AnthropicServer `yaml:"anthropic"`
 }
+
+// AnthropicServer places the Anthropic Messages API (spec-0002 section 3).
+type AnthropicServer struct {
+	// PathPrefix on the main listener; default "/anthropic", "" turns it off there.
+	// A pointer, so an explicit "" differs from "not set".
+	PathPrefix *string `yaml:"path_prefix"`
+	// Listen is an optional dedicated listener that serves the Anthropic API at its root. Default "off".
+	Listen string `yaml:"listen"`
+}
+
+// Prefix returns the path prefix on the main listener ("" = off).
+func (a AnthropicServer) Prefix() string {
+	if a.PathPrefix == nil {
+		return DefaultAnthropicPrefix
+	}
+	return *a.PathPrefix
+}
+
+// ListenEnabled reports whether the dedicated Anthropic listener is on.
+func (a AnthropicServer) ListenEnabled() bool { return a.Listen != "" && a.Listen != "off" }
+
+const DefaultAnthropicPrefix = "/anthropic"
+
+// API formats a model can serve (spec-0002 section 4).
+const (
+	FormatOpenAI    = "openai"
+	FormatAnthropic = "anthropic"
+)
 
 // Admin is the admin API (and optional web UI). It listens on localhost by default;
 // any address works (e.g. "0.0.0.0:8081" for public access). "off" disables it.
@@ -110,6 +140,7 @@ type Hook struct {
 	Timeout  time.Duration `yaml:"timeout"`
 	FailOpen bool          `yaml:"fail_open"` // on timeout / no responder: true = allow, false = 503
 	Models   []string      `yaml:"models"`    // same patterns as key allow-lists; empty = all
+	Formats  []string      `yaml:"formats"`   // API formats sent to the hook; default [openai]
 }
 
 func (h Hook) Enabled() bool { return h.Subject != "" }
@@ -142,13 +173,26 @@ type Model struct {
 	Provider string `yaml:"provider"`
 	Upstream string `yaml:"upstream"`
 	Price    *Price `yaml:"price"`
+	// Formats lists the API formats that may use this alias. Default: [openai], plus
+	// anthropic when the provider is type anthropic (spec-0002 section 4).
+	Formats []string `yaml:"formats"`
 }
 
 // Price is in USD per 1M tokens. CachedInput falls back to Input when zero.
+// CacheWrite (Anthropic prompt cache writes) falls back to 1.25 x Input, the 5-minute cache price.
 type Price struct {
 	Input       float64 `yaml:"input" json:"input"`
 	Output      float64 `yaml:"output" json:"output"`
 	CachedInput float64 `yaml:"cached_input" json:"cached_input"`
+	CacheWrite  float64 `yaml:"cache_write" json:"cache_write,omitempty"`
+}
+
+// DefaultFormats is the format list for a model or passthrough name on a provider of this type.
+func DefaultFormats(providerType string) []string {
+	if providerType == TypeAnthropic {
+		return []string{FormatOpenAI, FormatAnthropic}
+	}
+	return []string{FormatOpenAI}
 }
 
 const (
@@ -243,6 +287,13 @@ func (c *Config) applyDefaults() {
 	if n.Hooks.PreRequest.Timeout == 0 {
 		n.Hooks.PreRequest.Timeout = 200 * time.Millisecond
 	}
+	if len(n.Hooks.PreRequest.Formats) == 0 {
+		n.Hooks.PreRequest.Formats = []string{FormatOpenAI}
+	}
+	if c.Server.Anthropic.Listen == "" {
+		c.Server.Anthropic.Listen = "off"
+	}
+	types := map[string]string{}
 	for i := range c.Providers {
 		p := &c.Providers[i]
 		if p.Type == "" {
@@ -257,10 +308,15 @@ func (c *Config) applyDefaults() {
 			}
 		}
 		p.BaseURL = strings.TrimRight(p.BaseURL, "/")
+		types[p.Name] = p.Type
 	}
 	for i := range c.Models {
-		if c.Models[i].Upstream == "" {
-			c.Models[i].Upstream = c.Models[i].Name
+		m := &c.Models[i]
+		if m.Upstream == "" {
+			m.Upstream = m.Name
+		}
+		if len(m.Formats) == 0 {
+			m.Formats = DefaultFormats(types[m.Provider])
 		}
 	}
 }
@@ -299,6 +355,12 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	if err := c.Server.Anthropic.validate(); err != nil {
+		return err
+	}
+	if err := validFormats("nats.hooks.pre_request.formats", c.NATS.Hooks.PreRequest.Formats); err != nil {
+		return err
+	}
 	for name, subj := range map[string]string{
 		"nats.usage.subject_prefix":      c.NATS.Usage.SubjectPrefix,
 		"nats.control.subject_prefix":    c.NATS.Control.SubjectPrefix,
@@ -308,14 +370,14 @@ func (c *Config) validate() error {
 			return fmt.Errorf("%s %q is not a valid NATS subject (no spaces, wildcards or empty tokens)", name, subj)
 		}
 	}
-	providers := map[string]bool{}
+	providers := map[string]string{} // name -> type
 	for _, p := range c.Providers {
 		switch {
 		case p.Name == "":
 			return fmt.Errorf("provider without name")
 		case strings.Contains(p.Name, "/"):
 			return fmt.Errorf("provider %q: name must not contain '/'", p.Name)
-		case providers[p.Name]:
+		case providers[p.Name] != "":
 			return fmt.Errorf("provider %q defined twice", p.Name)
 		case p.Type != TypeOpenAI && p.Type != TypeOpenRouter && p.Type != TypeAnthropic:
 			return fmt.Errorf("provider %q: type %q is not supported (supported: openai, openrouter, anthropic)", p.Name, p.Type)
@@ -325,7 +387,7 @@ func (c *Config) validate() error {
 		if err := p.validateAnthropic(); err != nil {
 			return err
 		}
-		providers[p.Name] = true
+		providers[p.Name] = p.Type
 	}
 	models := map[string]bool{}
 	for _, m := range c.Models {
@@ -334,8 +396,14 @@ func (c *Config) validate() error {
 			return fmt.Errorf("model without name")
 		case models[m.Name]:
 			return fmt.Errorf("model %q defined twice", m.Name)
-		case !providers[m.Provider]:
+		case providers[m.Provider] == "":
 			return fmt.Errorf("model %q: unknown provider %q", m.Name, m.Provider)
+		}
+		if err := validFormats(fmt.Sprintf("model %q: formats", m.Name), m.Formats); err != nil {
+			return err
+		}
+		if slices.Contains(m.Formats, FormatAnthropic) && providers[m.Provider] != TypeAnthropic {
+			return fmt.Errorf("model %q: format anthropic needs a provider of type anthropic (translation is not supported)", m.Name)
 		}
 		models[m.Name] = true
 	}
@@ -359,6 +427,32 @@ func (p Provider) validateAnthropic() error {
 	default:
 		return fmt.Errorf("provider %q: openai_format %q is not supported (use %q)", p.Name, p.OpenAIFormat, OpenAIFormatCompat)
 	}
+}
+
+func (a AnthropicServer) validate() error {
+	if p := a.Prefix(); p != "" {
+		switch {
+		case !strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/") || strings.ContainsAny(p, " {}"):
+			return fmt.Errorf("server.anthropic.path_prefix %q: must start with '/' and not end with '/' (or \"\" to turn it off)", p)
+		case p == "/v1" || p == "/openai" || p == "/healthz" || strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/openai/"):
+			return fmt.Errorf("server.anthropic.path_prefix %q clashes with the OpenAI paths", p)
+		}
+	}
+	if a.ListenEnabled() {
+		if _, _, err := net.SplitHostPort(a.Listen); err != nil {
+			return fmt.Errorf("server.anthropic.listen: %w", err)
+		}
+	}
+	return nil
+}
+
+func validFormats(field string, fs []string) error {
+	for _, f := range fs {
+		if f != FormatOpenAI && f != FormatAnthropic {
+			return fmt.Errorf("%s: unknown format %q (use openai or anthropic)", field, f)
+		}
+	}
+	return nil
 }
 
 // validSubject accepts a literal NATS subject: dot-separated, non-empty tokens, no wildcards or spaces.

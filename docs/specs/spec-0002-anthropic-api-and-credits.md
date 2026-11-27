@@ -125,7 +125,7 @@ Source: [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway), 
 2. Routing: the `model` field resolves through the router, the key allow-list and `formats` (section 4). Only `anthropic` providers serve this format.
 3. Passthrough rules
    1. Body: change only the value of the top-level `model` field, and only when the alias differs from the upstream name. Edit those bytes in place; do not re-encode the body. Everything else is forwarded byte for byte.
-   2. Request headers: forward all `anthropic-*` headers, `user-agent` and `x-claude-code-*` headers unchanged. Remove the client's `Authorization` and `x-api-key` (they carry the aif key) and set the upstream `x-api-key`.
+   2. Request headers: forward all `anthropic-*` headers, `user-agent` and `x-claude-code-*` headers unchanged. Remove the client's `Authorization` and `x-api-key` (they carry the aif key) and set the upstream `x-api-key`. Also drop the client's `anthropic-workspace-id`: a client must not pick a workspace in the gateway's Anthropic org (the provider's `workspace_id` applies).
    3. Query string: forward it (`?beta=true`).
    4. Response: forward status, body and headers unchanged, including `request-id`, `retry-after`, `x-should-retry` and `anthropic-ratelimit-*`. Stream SSE with a flush after each event; never buffer.
    5. Gateway-made errors (bad key, model not allowed, hook deny) use the Anthropic envelope: `{"type":"error","error":{"type":"...","message":"..."}}`.
@@ -133,11 +133,12 @@ Source: [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway), 
    1. Non-stream: read `usage` from the response JSON.
    2. Stream: read `usage` from `message_start` (input and cache tokens) and the last `message_delta` (output tokens), without changing the bytes sent to the client.
    3. Token rule (D20): usage records always use OpenAI meaning. `PromptTokens` = all input, cache included (`input_tokens + cache_read_input_tokens + cache_creation_input_tokens`). `CachedTokens` = `cache_read_input_tokens`.
-   4. New usage field `CacheWriteTokens` (= `cache_creation_input_tokens`) and new price field `cache_write` (default 1.25x input, the 5-minute cache write price). Cost = `(prompt - cached - cache_write) x input + cached x cached_input + cache_write x cache_write_price + completion x output`.
-   5. New usage field `Format` (`openai` or `anthropic`).
-   6. Record `x-claude-code-session-id` (when present) so the admin UI can group a coding session.
-   7. `count_tokens` calls are logged with zero cost (Anthropic does not bill them).
-   8. Mirror the new usage and price fields in `web/app/types/admin.ts`.
+   4. New usage field `CacheWriteTokens` (= `cache_creation_input_tokens`) and new price field `cache_write` (default 1.25x input, the 5-minute cache write price). Cost = `(prompt - cached - cache_write) x input + cached x cached_input + cache_write x cache_write_price + completion x output`. 1-hour cache writes (2x input) are priced at the same `cache_write` rate for now; see open question 11.3.
+   5. `output_tokens_details.thinking_tokens` goes to `ReasoningTokens` (part of `CompletionTokens`, as in OpenAI).
+   6. New usage field `Format` (`openai` or `anthropic`).
+   7. Record `x-claude-code-session-id` (when present) so the admin UI can group a coding session.
+   8. `count_tokens` calls are logged with zero tokens and zero cost (Anthropic does not bill them), and skip the hook.
+   9. Mirror the new usage and price fields in `web/app/types/admin.ts`.
 5. Pre-request hook (NATS)
    1. New hook config `formats`, default `["openai"]`. Requests in a format not listed skip the hook. An extension gets Anthropic bodies only after it opts in.
    2. The hook request gets a new field `format`. Additive; no released field changes.
@@ -191,3 +192,4 @@ Numbers continue from spec-0001 section 9.
 
 1. Should `/anthropic/v1/messages/batches` (50 percent cheaper, good for credits) be in task-0008 or later? It needs async metering.
 2. Which HTTP status does the "credit balance too low" error use? The docs give only the message text. Check in task-0010.
+3. Price 1-hour cache writes at 2x input? The usage object splits them (`cache_creation.ephemeral_1h_input_tokens`). Claude Code used only 5-minute writes in the task-0008 test.

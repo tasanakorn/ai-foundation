@@ -130,6 +130,12 @@ var migrations = []string{
 	);
 	CREATE INDEX idx_admin_sessions_user ON admin_sessions (user_id);
 	CREATE INDEX idx_admin_sessions_expires ON admin_sessions (expires_at);`,
+
+	// v3: Anthropic API (spec-0002): cache writes, client API format, coding session
+	`ALTER TABLE usage_records
+		ADD COLUMN cache_write_tokens bigint NOT NULL DEFAULT 0,
+		ADD COLUMN format             text   NOT NULL DEFAULT 'openai',
+		ADD COLUMN session_id         text   NOT NULL DEFAULT '';`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start
@@ -250,7 +256,7 @@ func scanKey(row pgx.Row) (*store.Key, error) {
 
 const usageColumns = `id, created_at, key_id, tenant_id, app_id, end_user, endpoint, model, provider, upstream_model,
 	stream, status_code, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
-	cost_usd, estimated, latency_ms, error`
+	cost_usd, estimated, latency_ms, error, cache_write_tokens, format, session_id`
 
 // InsertUsage writes all records in one round trip. Records with a known ID are skipped,
 // so a retried batch never counts a request twice.
@@ -259,14 +265,14 @@ func (s *Store) InsertUsage(ctx context.Context, recs []store.UsageRecord) error
 		return nil
 	}
 	const q = `INSERT INTO usage_records (` + usageColumns + `)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		ON CONFLICT (id) DO NOTHING`
 	b := &pgx.Batch{}
 	for _, r := range recs {
 		b.Queue(q, r.ID, r.CreatedAt, r.KeyID, r.TenantID, r.AppID, r.EndUser,
 			r.Endpoint, r.Model, r.Provider, r.UpstreamModel, r.Stream, r.StatusCode,
 			r.PromptTokens, r.CompletionTokens, r.TotalTokens, r.CachedTokens, r.ReasoningTokens,
-			r.CostUSD, r.Estimated, r.LatencyMS, r.Error)
+			r.CostUSD, r.Estimated, r.LatencyMS, r.Error, r.CacheWriteTokens, r.Format, r.SessionID)
 	}
 	// A batch outside a transaction runs as one implicit transaction: all or nothing.
 	return s.pool.SendBatch(ctx, b).Close()
@@ -314,7 +320,8 @@ func (s *Store) ListUsage(ctx context.Context, f store.UsageFilter) ([]store.Usa
 		var r store.UsageRecord
 		if err := rows.Scan(&r.ID, &r.CreatedAt, &r.KeyID, &r.TenantID, &r.AppID, &r.EndUser, &r.Endpoint, &r.Model,
 			&r.Provider, &r.UpstreamModel, &r.Stream, &r.StatusCode, &r.PromptTokens, &r.CompletionTokens,
-			&r.TotalTokens, &r.CachedTokens, &r.ReasoningTokens, &r.CostUSD, &r.Estimated, &r.LatencyMS, &r.Error); err != nil {
+			&r.TotalTokens, &r.CachedTokens, &r.ReasoningTokens, &r.CostUSD, &r.Estimated, &r.LatencyMS, &r.Error,
+			&r.CacheWriteTokens, &r.Format, &r.SessionID); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = r.CreatedAt.UTC()

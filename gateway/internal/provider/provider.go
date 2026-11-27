@@ -1,15 +1,15 @@
 // Package provider talks to upstream LLM APIs.
 //
-// The gateway speaks the OpenAI wire format on both sides. A Provider takes an
-// OpenAI-format request body and returns an OpenAI-format response. A future
-// native adapter (for example Anthropic Messages) translates inside Do, so the
-// gateway does not change.
+// A Provider takes an OpenAI-format request body and returns an OpenAI-format
+// response (Do). A provider that also implements Native serves its own API format
+// as a passthrough (the Anthropic Messages API under /anthropic).
 package provider
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -22,6 +22,17 @@ type Provider interface {
 	// Do sends body to endpoint ("/chat/completions", "/embeddings", ...).
 	// The caller closes the response body.
 	Do(ctx context.Context, endpoint string, body []byte) (*http.Response, error)
+}
+
+// Native is a provider that also serves its own API format unchanged (passthrough),
+// such as the Anthropic Messages API (spec-0002 section 6).
+type Native interface {
+	Provider
+	// NativeFormat is the API format it serves natively ("anthropic").
+	NativeFormat() string
+	// Native sends method base_url+path?query with body as is. header holds the client
+	// headers the gateway chose to forward; the provider adds its own auth.
+	Native(ctx context.Context, method, path, query string, header http.Header, body []byte) (*http.Response, error)
 }
 
 // NewHTTPClient returns a pooled client shared by all providers.
@@ -104,17 +115,40 @@ func NewAnthropic(c config.Provider, client *http.Client) *Anthropic {
 func (p *Anthropic) Name() string { return p.name }
 
 func (p *Anthropic) Do(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+endpoint, bytes.NewReader(body))
+	return p.Native(ctx, http.MethodPost, endpoint, "", nil, body)
+}
+
+func (p *Anthropic) NativeFormat() string { return config.FormatAnthropic }
+
+// Native sends a Messages API request. body goes out byte for byte.
+func (p *Anthropic) Native(ctx context.Context, method, path, query string, header http.Header, body []byte) (*http.Response, error) {
+	u := p.baseURL + path
+	if query != "" {
+		u += "?" + query
+	}
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, rd)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	for k, vs := range header {
+		req.Header[k] = append([]string(nil), vs...)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for k, v := range p.headers {
 		req.Header.Set(k, v)
 	}
-	// Set auth last so custom headers cannot replace it.
+	// Set auth last so neither client nor custom headers can replace it.
+	req.Header.Del("Authorization")
 	if p.apiKey != "" {
 		req.Header.Set("X-Api-Key", p.apiKey)
+	} else {
+		req.Header.Del("X-Api-Key")
 	}
 	if p.workspaceID != "" {
 		req.Header.Set("Anthropic-Workspace-Id", p.workspaceID)

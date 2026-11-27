@@ -44,8 +44,59 @@ func Apply(rec *store.UsageRecord, u *Usage, price *config.Price) {
 	if u.Cost != nil {
 		rec.CostUSD = *u.Cost
 	} else {
-		rec.CostUSD = Cost(price, rec.PromptTokens, rec.CachedTokens, rec.CompletionTokens)
+		rec.CostUSD = Cost(price, rec.PromptTokens, rec.CachedTokens, 0, rec.CompletionTokens)
 	}
+}
+
+// AnthropicUsage is the Anthropic Messages "usage" object. In a stream, message_start
+// carries the input side and message_delta the (cumulative) output side.
+type AnthropicUsage struct {
+	InputTokens              int64 `json:"input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	OutputTokensDetails      *struct {
+		ThinkingTokens int64 `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
+}
+
+func (u AnthropicUsage) thinking() int64 {
+	if u.OutputTokensDetails == nil {
+		return 0
+	}
+	return u.OutputTokensDetails.ThinkingTokens
+}
+
+// Merge takes the non-zero fields of later (a message_delta usage) over u.
+func (u *AnthropicUsage) Merge(later AnthropicUsage) {
+	for _, f := range []struct {
+		dst *int64
+		src int64
+	}{
+		{&u.InputTokens, later.InputTokens},
+		{&u.CacheCreationInputTokens, later.CacheCreationInputTokens},
+		{&u.CacheReadInputTokens, later.CacheReadInputTokens},
+		{&u.OutputTokens, later.OutputTokens},
+	} {
+		if f.src != 0 {
+			*f.dst = f.src
+		}
+	}
+	if later.thinking() != 0 {
+		u.OutputTokensDetails = later.OutputTokensDetails
+	}
+}
+
+// ApplyAnthropic copies Anthropic usage into rec with the OpenAI token meaning (spec-0002 D20):
+// prompt = input + cache read + cache write, cached = cache read.
+func ApplyAnthropic(rec *store.UsageRecord, u AnthropicUsage, price *config.Price) {
+	rec.PromptTokens = u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	rec.CachedTokens = u.CacheReadInputTokens
+	rec.CacheWriteTokens = u.CacheCreationInputTokens
+	rec.CompletionTokens = u.OutputTokens
+	rec.ReasoningTokens = u.thinking() // part of output_tokens, as in OpenAI's reasoning_tokens
+	rec.TotalTokens = rec.PromptTokens + rec.CompletionTokens
+	rec.CostUSD = Cost(price, rec.PromptTokens, rec.CachedTokens, rec.CacheWriteTokens, rec.CompletionTokens)
 }
 
 // Estimate fills tokens with a rough 4-bytes-per-token guess when the upstream sent no usage.
@@ -54,11 +105,11 @@ func Estimate(rec *store.UsageRecord, promptBytes, completionBytes int, price *c
 	rec.CompletionTokens = int64(completionBytes+3) / 4
 	rec.TotalTokens = rec.PromptTokens + rec.CompletionTokens
 	rec.Estimated = true
-	rec.CostUSD = Cost(price, rec.PromptTokens, 0, rec.CompletionTokens)
+	rec.CostUSD = Cost(price, rec.PromptTokens, 0, 0, rec.CompletionTokens)
 }
 
-// Cost in USD. Prices are per 1M tokens.
-func Cost(p *config.Price, prompt, cached, completion int64) float64 {
+// Cost in USD. Prices are per 1M tokens. prompt includes cached and cacheWrite tokens.
+func Cost(p *config.Price, prompt, cached, cacheWrite, completion int64) float64 {
 	if p == nil {
 		return 0
 	}
@@ -66,7 +117,12 @@ func Cost(p *config.Price, prompt, cached, completion int64) float64 {
 	if cachedPrice == 0 {
 		cachedPrice = p.Input
 	}
-	return (float64(prompt-cached)*p.Input + float64(cached)*cachedPrice + float64(completion)*p.Output) / 1e6
+	writePrice := p.CacheWrite
+	if writePrice == 0 {
+		writePrice = 1.25 * p.Input
+	}
+	return (float64(prompt-cached-cacheWrite)*p.Input + float64(cached)*cachedPrice +
+		float64(cacheWrite)*writePrice + float64(completion)*p.Output) / 1e6
 }
 
 // Sink receives batches of usage records. Store, webhook, queue, ... are all sinks.

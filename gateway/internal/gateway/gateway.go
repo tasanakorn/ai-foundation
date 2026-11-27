@@ -1,4 +1,5 @@
-// Package gateway is the public, OpenAI-compatible API.
+// Package gateway is the public API: OpenAI format under /v1 (and /openai/v1),
+// Anthropic Messages format under /anthropic (spec-0002).
 package gateway
 
 import (
@@ -10,9 +11,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
+	"ai-foundation/gateway/internal/config"
 	"ai-foundation/gateway/internal/hook"
 	"ai-foundation/gateway/internal/httpx"
 	"ai-foundation/gateway/internal/id"
@@ -29,6 +32,9 @@ const EndUserHeader = "X-AIF-End-User"
 const (
 	maxResponseBytes = 64 << 20
 	maxErrorText     = 512
+
+	formatOpenAI    = config.FormatOpenAI
+	formatAnthropic = config.FormatAnthropic
 )
 
 type Handler struct {
@@ -40,6 +46,7 @@ type Handler struct {
 	log     *slog.Logger
 	maxBody int64
 	timeout time.Duration
+	anthPfx string
 }
 
 type Options struct {
@@ -51,29 +58,46 @@ type Options struct {
 	Log             *slog.Logger
 	MaxBodyBytes    int64
 	UpstreamTimeout time.Duration
+	AnthropicPrefix string // path prefix of the Anthropic API on the main listener; "" = off
 }
 
 func New(o Options) *Handler {
 	return &Handler{router: o.Router, keys: o.Keys, rec: o.Recorder, hook: o.Hook, ready: o.Ready, log: o.Log,
-		maxBody: o.MaxBodyBytes, timeout: o.UpstreamTimeout}
+		maxBody: o.MaxBodyBytes, timeout: o.UpstreamTimeout, anthPfx: o.AnthropicPrefix}
 }
 
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if h.ready != nil {
-			if err := h.ready(); err != nil {
-				httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": err.Error()})
-				return
-			}
-		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.Handle("GET /v1/models", h.auth(h.listModels))
-	mux.Handle("POST /v1/chat/completions", h.auth(h.forward("/chat/completions")))
-	mux.Handle("POST /v1/completions", h.auth(h.forward("/completions")))
-	mux.Handle("POST /v1/embeddings", h.auth(h.forward("/embeddings")))
+	mux.HandleFunc("GET /healthz", h.healthz)
+	for _, pfx := range []string{"/v1", "/openai/v1"} { // same handlers (spec-0002 section 3)
+		mux.Handle("GET "+pfx+"/models", h.auth(formatOpenAI, h.listModels))
+		mux.Handle("POST "+pfx+"/chat/completions", h.auth(formatOpenAI, h.forward("/chat/completions")))
+		mux.Handle("POST "+pfx+"/completions", h.auth(formatOpenAI, h.forward("/completions")))
+		mux.Handle("POST "+pfx+"/embeddings", h.auth(formatOpenAI, h.forward("/embeddings")))
+	}
+	if h.anthPfx != "" {
+		h.anthropicRoutes(mux, h.anthPfx)
+	}
 	return mux
+}
+
+// AnthropicRoutes serves only the Anthropic API at the root (/v1/messages) and /healthz,
+// for the optional dedicated listener (server.anthropic.listen).
+func (h *Handler) AnthropicRoutes() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", h.healthz)
+	h.anthropicRoutes(mux, "")
+	return mux
+}
+
+func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
+	if h.ready != nil {
+		if err := h.ready(); err != nil {
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "error": err.Error()})
+			return
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ---- auth ----
@@ -82,16 +106,17 @@ type ctxKey struct{}
 
 func keyFrom(ctx context.Context) *store.Key { return ctx.Value(ctxKey{}).(*store.Key) }
 
-func (h *Handler) auth(next http.HandlerFunc) http.Handler {
+// auth checks the aif key (Authorization: Bearer or x-api-key). Errors use the shape of format.
+func (h *Handler) auth(format string, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		k, err := h.keys.Authenticate(r.Context(), httpx.BearerToken(r))
 		switch {
 		case errors.Is(err, keys.ErrInvalid):
-			httpx.WriteError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "invalid or missing API key")
+			(&apiError{http.StatusUnauthorized, "invalid_request_error", "invalid_api_key", "invalid or missing API key"}).writeAs(w, format)
 			return
 		case err != nil:
 			h.log.Error("key lookup failed", "err", err)
-			httpx.WriteError(w, http.StatusInternalServerError, "server_error", "internal_error", "key lookup failed")
+			(&apiError{http.StatusInternalServerError, "server_error", "internal_error", "key lookup failed"}).writeAs(w, format)
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, k)))
@@ -104,7 +129,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	k := keyFrom(r.Context())
 	data := []map[string]any{}
 	for _, m := range h.router.Models() {
-		if keys.Allows(k, m.ID) {
+		if keys.Allows(k, m.ID) && slices.Contains(m.Formats, formatOpenAI) {
 			data = append(data, map[string]any{"id": m.ID, "object": "model", "created": 0, "owned_by": m.Provider})
 		}
 	}
@@ -120,6 +145,15 @@ type apiError struct {
 
 func (e *apiError) write(w http.ResponseWriter) { httpx.WriteError(w, e.status, e.typ, e.code, e.msg) }
 
+// writeAs writes the error in the shape clients of that API format can parse.
+func (e *apiError) writeAs(w http.ResponseWriter, format string) {
+	if format == formatAnthropic {
+		writeAnthropicError(w, e.status, e.msg)
+		return
+	}
+	e.write(w)
+}
+
 func badRequest(code, msg string) *apiError {
 	return &apiError{http.StatusBadRequest, "invalid_request_error", code, msg}
 }
@@ -130,7 +164,8 @@ type prepared struct {
 	model  string
 	route  router.Route
 	stream bool
-	size   int // body bytes, for the token estimate when usage is missing
+	size   int    // body bytes, for the token estimate when usage is missing
+	body   []byte // Anthropic only: the bytes to forward (client's or the hook's)
 }
 
 func (h *Handler) prepare(k *store.Key, body []byte) (*prepared, *apiError) {
@@ -143,7 +178,7 @@ func (h *Handler) prepare(k *store.Key, body []byte) (*prepared, *apiError) {
 		return nil, badRequest("missing_model", "model is required")
 	}
 	var ok bool
-	if p.route, ok = h.router.Resolve(p.model); !ok {
+	if p.route, ok = h.router.Resolve(p.model); !ok || !p.route.Serves(formatOpenAI) {
 		return nil, &apiError{http.StatusNotFound, "invalid_request_error", "model_not_found", "model " + p.model + " does not exist"}
 	}
 	if !keys.Allows(k, p.model) {
@@ -178,7 +213,7 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 
 		rec := store.UsageRecord{
 			ID: reqID, CreatedAt: start.UTC(), KeyID: k.ID, TenantID: k.TenantID, AppID: k.AppID,
-			EndUser: r.Header.Get(EndUserHeader), Endpoint: endpoint,
+			EndUser: r.Header.Get(EndUserHeader), Endpoint: endpoint, Format: formatOpenAI,
 		}
 		if rec.EndUser == "" {
 			rec.EndUser = stringField(p.req, "user")
@@ -196,7 +231,7 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 		}()
 
 		if h.hook != nil {
-			if p, aerr = h.runHook(r.Context(), k, &rec, endpoint, body, p); aerr != nil {
+			if p, aerr = h.runHook(r.Context(), k, &rec, endpoint, body, p, formatOpenAI); aerr != nil {
 				rec.StatusCode, rec.Error = aerr.status, aerr.code+": "+aerr.msg
 				aerr.write(w)
 				return
@@ -238,13 +273,13 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 
 // runHook asks the pre-request hook. It returns the request to send: the same one,
 // or the hook's replacement (parsed, routed and allow-list checked again).
-func (h *Handler) runHook(ctx context.Context, k *store.Key, rec *store.UsageRecord, endpoint string, body []byte, p *prepared) (*prepared, *apiError) {
+func (h *Handler) runHook(ctx context.Context, k *store.Key, rec *store.UsageRecord, endpoint string, body []byte, p *prepared, format string) (*prepared, *apiError) {
 	d, err := h.hook.PreRequest(ctx, &hook.Request{
 		RequestID: rec.ID,
 		Key:       hook.Key{ID: k.ID, TenantID: k.TenantID, AppID: k.AppID, Metadata: k.Metadata},
 		EndUser:   rec.EndUser, Endpoint: endpoint,
 		Model: p.model, Provider: rec.Provider, UpstreamModel: rec.UpstreamModel, Stream: p.stream,
-		Body: body,
+		Body: body, Format: format,
 	})
 	if err != nil {
 		return nil, &apiError{http.StatusServiceUnavailable, "server_error", "hook_unavailable", "request policy check is unavailable, try again later"}
@@ -253,6 +288,11 @@ func (h *Handler) runHook(ctx context.Context, k *store.Key, rec *store.UsageRec
 	case hook.Deny:
 		return nil, &apiError{d.Status, "invalid_request_error", d.Code, d.Message}
 	case hook.Modify:
+		if format == formatAnthropic {
+			// Allowed, but a changed body loses prompt caching and can break preserved thinking.
+			h.log.Warn("pre-request hook modified an Anthropic request", "request_id", rec.ID, "model", p.model)
+			return h.prepareAnthropic(k, d.Body)
+		}
 		return h.prepare(k, d.Body)
 	}
 	return p, nil

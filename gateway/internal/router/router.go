@@ -2,6 +2,7 @@
 package router
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -14,13 +15,18 @@ type Route struct {
 	Provider provider.Provider
 	Upstream string // name sent to the provider
 	Price    *config.Price
+	Formats  []string // API formats that may use this route
 }
+
+// Serves reports whether a client in this API format may use the route.
+func (r Route) Serves(format string) bool { return slices.Contains(r.Formats, format) }
 
 type ModelInfo struct {
 	ID       string        `json:"id"`
 	Provider string        `json:"provider"`
 	Upstream string        `json:"upstream"`
 	Price    *config.Price `json:"price,omitempty"`
+	Formats  []string      `json:"formats"`
 }
 
 type Router struct {
@@ -32,6 +38,9 @@ type Router struct {
 func New(models []config.Model, providers map[string]provider.Provider, passthrough bool) *Router {
 	m := make(map[string]config.Model, len(models))
 	for _, x := range models {
+		if len(x.Formats) == 0 { // config.Parse sets these; this covers hand-built configs
+			x.Formats = providerFormats(providers[x.Provider])
+		}
 		m[x.Name] = x
 	}
 	return &Router{providers: providers, models: m, passthrough: passthrough}
@@ -42,12 +51,12 @@ func New(models []config.Model, providers map[string]provider.Provider, passthro
 //  2. if passthrough is on: "<provider>/<upstream model>" ("openrouter/anthropic/claude-sonnet-4.5")
 func (r *Router) Resolve(model string) (Route, bool) {
 	if m, ok := r.models[model]; ok {
-		return Route{Model: model, Provider: r.providers[m.Provider], Upstream: m.Upstream, Price: m.Price}, true
+		return Route{Model: model, Provider: r.providers[m.Provider], Upstream: m.Upstream, Price: m.Price, Formats: m.Formats}, true
 	}
 	if r.passthrough {
 		if i := strings.IndexByte(model, '/'); i > 0 && i < len(model)-1 {
 			if p, ok := r.providers[model[:i]]; ok {
-				return Route{Model: model, Provider: p, Upstream: model[i+1:]}, true
+				return Route{Model: model, Provider: p, Upstream: model[i+1:], Formats: providerFormats(p)}, true
 			}
 		}
 	}
@@ -58,7 +67,7 @@ func (r *Router) Resolve(model string) (Route, bool) {
 func (r *Router) Models() []ModelInfo {
 	out := make([]ModelInfo, 0, len(r.models))
 	for _, m := range r.models {
-		out = append(out, ModelInfo{ID: m.Name, Provider: m.Provider, Upstream: m.Upstream, Price: m.Price})
+		out = append(out, ModelInfo{ID: m.Name, Provider: m.Provider, Upstream: m.Upstream, Price: m.Price, Formats: m.Formats})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -75,3 +84,11 @@ func (r *Router) Providers() []string {
 }
 
 func (r *Router) Passthrough() bool { return r.passthrough }
+
+// providerFormats is the default format list for "<provider>/<model>" names (spec-0002 section 4.4).
+func providerFormats(p provider.Provider) []string {
+	if n, ok := p.(provider.Native); ok {
+		return []string{config.FormatOpenAI, n.NativeFormat()}
+	}
+	return []string{config.FormatOpenAI}
+}

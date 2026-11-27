@@ -35,14 +35,15 @@ make dev                 # Postgres + NATS (Docker), then gateway + web (+ llama
 
 `.env` is gitignored and read by both `scripts/dev.py` and Docker Compose. Variables set in your shell win over it.
 
-| Service               | URL                            | Notes                                               |
-| --------------------- | ------------------------------ | --------------------------------------------------- |
-| Public API            | http://127.0.0.1:8080/v1       | Rebuilds and restarts on `.go` / `.yaml` save       |
-| Admin API             | http://127.0.0.1:8081/admin/v1 | Master key `dev-master-key-0000` (scripts)          |
-| Admin UI              | http://localhost:3000          | Sign in: `admin@example.com` / `dev-admin-password` |
-| llama-server          | http://127.0.0.1:8090          | Only if `LLAMA_MODEL` or `LLAMA_HF` is set          |
-| PostgreSQL 18         | `127.0.0.1:5432`               | Started by `make dev` or `make services-up`         |
-| NATS 2.15 (JetStream) | `nats://127.0.0.1:4222`        | Monitor at http://127.0.0.1:8222                    |
+| Service               | URL                             | Notes                                               |
+| --------------------- | ------------------------------- | --------------------------------------------------- |
+| Public API            | http://127.0.0.1:8080/v1        | Rebuilds and restarts on `.go` / `.yaml` save       |
+| Anthropic API         | http://127.0.0.1:8080/anthropic | Claude Code and Anthropic SDK apps (section 3)      |
+| Admin API             | http://127.0.0.1:8081/admin/v1  | Master key `dev-master-key-0000` (scripts)          |
+| Admin UI              | http://localhost:3000           | Sign in: `admin@example.com` / `dev-admin-password` |
+| llama-server          | http://127.0.0.1:8090           | Only if `LLAMA_MODEL` or `LLAMA_HF` is set          |
+| PostgreSQL 18         | `127.0.0.1:5432`                | Started by `make dev` or `make services-up`         |
+| NATS 2.15 (JetStream) | `nats://127.0.0.1:4222`         | Monitor at http://127.0.0.1:8222                    |
 
 1. Service commands: `make services-up`, `services-down` (keeps data), `services-reset` (deletes data), `services-ps`, `services-logs`, `psql`.
 2. llama.cpp runs natively, not in Docker: on macOS, Docker cannot use the Metal GPU.
@@ -51,7 +52,7 @@ make dev                 # Postgres + NATS (Docker), then gateway + web (+ llama
 5. **Playground** (admin UI → Playground): paste an API key, pick a model, and chat with streaming. Each message takes the real `/v1` path and shows tokens, time to first token, cost and the request ID.
 6. The dev admin account is created on the first start only (`AIF_ADMIN_EMAIL`, `AIF_ADMIN_PASSWORD`). Manage accounts on the Admins page or with `aif admin create-user | reset-password | list-users`.
 
-Dev models (`gateway/aif.dev.yaml`): `mini` → OpenRouter `openai/gpt-4o-mini`, `local` → llama.cpp. Passthrough is on, so `openrouter/<any model>` works too.
+Dev models (`gateway/aif.dev.yaml`): `mini` → OpenRouter `openai/gpt-4o-mini`, `local` → llama.cpp, `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5` → Claude API (needs `ANTHROPIC_API_KEY`). Passthrough is on, so `openrouter/<any model>` works too.
 
 ```sh
 # create a key in the UI (API keys → New key), then:
@@ -60,7 +61,33 @@ curl -s 127.0.0.1:8080/v1/chat/completions -H "Authorization: Bearer sk-aif-..."
   -d '{"model":"local","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-## 3. Extensions (NATS)
+## 3. Connect apps and coding agents
+
+One gateway key (`sk-aif-...`) works for both API formats. Details: [spec-0002](docs/specs/spec-0002-anthropic-api-and-credits.md).
+
+| Client                           | Base URL                      | Key setting                     |
+| -------------------------------- | ----------------------------- | ------------------------------- |
+| OpenAI SDKs and tools            | `https://<gateway>/v1`        | `OPENAI_API_KEY` / `api_key`    |
+| Claude Code                      | `https://<gateway>/anthropic` | `ANTHROPIC_AUTH_TOKEN`          |
+| Anthropic SDKs, Claude Agent SDK | `https://<gateway>/anthropic` | `ANTHROPIC_API_KEY` / `api_key` |
+
+1. The Anthropic base URL ends in `/anthropic`, **without** `/v1`: the client adds `/v1/messages`. A request to `/anthropic/v1/v1/...` gets a 404 that says so.
+2. `/openai/v1` is an alias of `/v1`.
+3. Only aliases on a provider of `type: anthropic` work on `/anthropic`. The body goes upstream unchanged except `model`, so prompt caching works, and cache reads and writes are metered.
+4. With a Claude Max, Ultra or Team plan, use an Anthropic key from the Console org linked to the plan: the gateway then spends the plan's monthly API credits.
+5. An ingress that cannot route by path can use a dedicated port instead: `AIF_ANTHROPIC_LISTEN=:8082` serves the Anthropic API at the root of that port.
+
+```sh
+# Claude Code through the gateway
+ANTHROPIC_BASE_URL=http://127.0.0.1:8080/anthropic ANTHROPIC_AUTH_TOKEN=sk-aif-... claude -p "hello"
+```
+
+```python
+import anthropic
+client = anthropic.Anthropic(base_url="http://127.0.0.1:8080/anthropic", api_key="sk-aif-...")
+```
+
+## 4. Extensions (NATS)
 
 | Subject                       | Kind                         | Use                                   |
 | ----------------------------- | ---------------------------- | ------------------------------------- |
@@ -76,7 +103,7 @@ BUDGET_TENANT_LIMITS="acme=5000" uv run extensions/example-budget/budget.py
 
 The dev config has the hook on with `fail_open: true`, so requests pass when no extension runs.
 
-## 4. Test and build
+## 5. Test and build
 
 ```sh
 make test     # go vet + go test -race, web typecheck
@@ -86,7 +113,7 @@ make build    # web/.output/public + gateway/bin/aif
 1. Go tests need no Docker: they start an embedded PostgreSQL (downloaded once into `gateway/.cache/`) and an in-process NATS.
 2. To test against another Postgres: `AIF_TEST_PG_URL=postgres://aif:aif-dev@127.0.0.1:5432/aif?sslmode=disable make test`. Each test makes and drops its own database.
 
-## 5. Run in production
+## 6. Run in production
 
 1. Copy `gateway/aif.example.yaml` to `aif.yaml` and edit it.
 2. Run PostgreSQL and set `DATABASE_URL`. Migrations run at startup.

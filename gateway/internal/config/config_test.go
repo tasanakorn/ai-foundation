@@ -51,6 +51,48 @@ providers:
 	}
 }
 
+func TestFormatsAndAnthropicServer(t *testing.T) {
+	cfg, err := Parse([]byte(`
+admin: { listen: "off" }
+database: { url: "postgres://x" }
+providers:
+  - { name: o, base_url: "http://x" }
+  - { name: a, type: anthropic, openai_format: compat }
+models:
+  - { name: om, provider: o }
+  - { name: am, provider: a }
+  - { name: an, provider: a, formats: [anthropic] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Models[0].Formats; len(got) != 1 || got[0] != FormatOpenAI {
+		t.Fatalf("openai model formats: %v", got)
+	}
+	if got := cfg.Models[1].Formats; len(got) != 2 || got[1] != FormatAnthropic {
+		t.Fatalf("anthropic model formats: %v", got)
+	}
+	if got := cfg.Models[2].Formats; len(got) != 1 || got[0] != FormatAnthropic {
+		t.Fatalf("explicit formats: %v", got)
+	}
+	a := cfg.Server.Anthropic
+	if a.Prefix() != "/anthropic" || a.ListenEnabled() || a.Listen != "off" {
+		t.Fatalf("anthropic server defaults: prefix %q listen %q", a.Prefix(), a.Listen)
+	}
+	if f := cfg.NATS.Hooks.PreRequest.Formats; len(f) != 1 || f[0] != FormatOpenAI {
+		t.Fatalf("hook formats default: %v", f)
+	}
+
+	cfg, err = Parse([]byte(`{admin: {listen: "off"}, database: {url: "postgres://x"},
+		server: {anthropic: {path_prefix: "", listen: "127.0.0.1:8082"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := cfg.Server.Anthropic; a.Prefix() != "" || !a.ListenEnabled() {
+		t.Fatalf("prefix off / listener on: %+v", a)
+	}
+}
+
 func TestNATSDefaults(t *testing.T) {
 	cfg, err := Parse([]byte(`{admin: { listen: "off" }, database: { url: "postgres://x" }}`))
 	if err != nil {
@@ -99,6 +141,13 @@ func TestValidate(t *testing.T) {
 		"openai_format on openai":    db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x, openai_format: compat}]",
 		"workspace_id on openai":     db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x, workspace_id: w}]",
 		"empty token":                db + "admin: {listen: \"off\"}\nnats: {hooks: {pre_request: {subject: \"aif..hook\"}}}",
+		"prefix without slash":       db + "admin: {listen: \"off\"}\nserver: {anthropic: {path_prefix: anthropic}}",
+		"prefix trailing slash":      db + "admin: {listen: \"off\"}\nserver: {anthropic: {path_prefix: /anthropic/}}",
+		"prefix clashes with /v1":    db + "admin: {listen: \"off\"}\nserver: {anthropic: {path_prefix: /v1}}",
+		"anthropic listen":           db + "admin: {listen: \"off\"}\nserver: {anthropic: {listen: nope}}",
+		"unknown model format":       db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x}]\nmodels: [{name: m, provider: o, formats: [gemini]}]",
+		"anthropic format on openai": db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x}]\nmodels: [{name: m, provider: o, formats: [anthropic]}]",
+		"unknown hook format":        db + "admin: {listen: \"off\"}\nnats: {hooks: {pre_request: {formats: [grpc]}}}",
 	}
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {

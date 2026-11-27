@@ -99,6 +99,9 @@ func run(cfgPath string, log *slog.Logger) error {
 	}
 
 	servers := []*http.Server{{Addr: cfg.Server.Listen, Handler: a.Public, ReadHeaderTimeout: 10 * time.Second}}
+	if an := cfg.Server.Anthropic; an.ListenEnabled() {
+		servers = append(servers, &http.Server{Addr: an.Listen, Handler: a.Anthropic, ReadHeaderTimeout: 10 * time.Second})
+	}
 	if a.Admin != nil {
 		if !config.IsLoopback(cfg.Admin.Listen) {
 			log.Warn("admin API is reachable from the network; use TLS in front and strong passwords", "addr", cfg.Admin.Listen)

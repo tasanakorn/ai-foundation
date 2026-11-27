@@ -1,6 +1,6 @@
 # task-0008: Anthropic Messages API under /anthropic
 
-- Status: todo
+- Status: done
 - Spec: [spec-0002](../specs/spec-0002-anthropic-api-and-credits.md) sections 3, 4, 6
 - Depends on: [task-0007](task-0007-anthropic-provider-type.md)
 - Done when: Claude Code and the Anthropic SDK work through `https://<gateway>/anthropic` with an aif key, requests pass through byte for byte (except `model`), and every request is metered with cache tokens.
@@ -31,3 +31,8 @@
    7. Hook skipped for Anthropic requests unless `formats` lists `anthropic`.
 2. Manual: `claude -p` with `ANTHROPIC_BASE_URL=http://localhost:8080/anthropic` against a real key, and the request shows in the admin UI usage page.
 3. `make -C gateway vet test` and `cd web && pnpm typecheck`.
+4. Done 2026-11-27
+   1. Item 1: `gateway/internal/gateway/anthropic_test.go` (fake upstream, all 7 points; the stream test fails if the gateway buffers) and `anthropic_internal_test.go` (in-place `model` edit, header filter, error types). Config tests cover `path_prefix`, `listen`, `formats` and hook `formats`.
+   2. Item 2, live with the real Claude API: `claude -p --model claude-haiku-5-5` with `ANTHROPIC_BASE_URL=.../anthropic` and `ANTHROPIC_AUTH_TOKEN=<aif key>` answered correctly. Its first run wrote 30,713 tokens to the prompt cache; the second run read 14,642 of them back, so passthrough keeps caching. `count_tokens`, `/anthropic/v1/models` and the `/v1/v1` hint also checked live. Usage was checked through the admin API, not the UI page.
+   3. Item 3: both pass.
+   4. Small additions: thinking tokens are metered as reasoning tokens; the client's `anthropic-workspace-id` is dropped (spec-0002 section 6.3.2).

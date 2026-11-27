@@ -69,6 +69,11 @@ type UsageRecord struct {
 	Estimated        bool      `json:"estimated"`
 	LatencyMS        int64     `json:"latency_ms"`
 	Error            string    `json:"error,omitempty"`
+	// Added in spec-0002. Token fields keep the OpenAI meaning for every format (D20):
+	// PromptTokens includes cached and cache-write tokens.
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	Format           string `json:"format"`               // API format the client used: openai or anthropic
+	SessionID        string `json:"session_id,omitempty"` // x-claude-code-session-id, when sent
 }
 
 type UsageFilter struct {
