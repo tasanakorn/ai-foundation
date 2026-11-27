@@ -32,6 +32,7 @@ type OIDC struct {
 	now       func() time.Time
 	order     []string
 	providers map[string]*idp
+	auto      string // admin.oidc.auto_redirect
 }
 
 const (
@@ -70,7 +71,7 @@ func NewOIDC(ctx context.Context, svc *Service, st store.Store, a config.Admin, 
 	if len(a.OIDC.Providers) == 0 {
 		return nil
 	}
-	o := &OIDC{svc: svc, st: st, publicURL: a.PublicURL, ttl: a.OIDC.SessionTTL, client: client, log: log,
+	o := &OIDC{svc: svc, st: st, publicURL: a.PublicURL, auto: a.OIDC.AutoRedirect, ttl: a.OIDC.SessionTTL, client: client, log: log,
 		now: time.Now, providers: map[string]*idp{}}
 	for _, p := range a.OIDC.Providers {
 		o.order = append(o.order, p.Name)
@@ -99,6 +100,14 @@ func (o *OIDC) Providers() []ProviderInfo {
 		out = append(out, ProviderInfo{Name: name, Title: o.providers[name].cfg.Title})
 	}
 	return out
+}
+
+// AutoRedirect is the provider the sign-in page goes to without a click, or "".
+func (o *OIDC) AutoRedirect() string {
+	if o == nil {
+		return ""
+	}
+	return o.auto
 }
 
 func (o *OIDC) discover(ctx context.Context, p *idp) (*oidc.Provider, error) {

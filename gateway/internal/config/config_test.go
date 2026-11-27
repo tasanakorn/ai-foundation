@@ -127,6 +127,7 @@ func TestOIDCConfig(t *testing.T) {
   public_url: https://admin.example.com/
   bootstrap: {email: a@b.c, password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"}
   oidc:
+    auto_redirect: sso
     providers:
       - {name: sso, issuer: "https://idp.example.com/", client_id: c, allowed_groups: [aif-admins]}
       - {name: local-idp, title: Local, issuer: "http://localhost:8443", client_id: c}
@@ -136,7 +137,7 @@ func TestOIDCConfig(t *testing.T) {
 	}
 	a := c.Admin
 	p := a.OIDC.Providers[0]
-	if a.PublicURL != "https://admin.example.com" || !a.PasswordLoginOn() || a.OIDC.SessionTTL != a.SessionTTL ||
+	if a.PublicURL != "https://admin.example.com" || a.PasswordLoginOn() || a.OIDC.AutoRedirect != "sso" || a.OIDC.SessionTTL != a.SessionTTL ||
 		p.Title != "sso" || p.GroupsClaim != "groups" || len(p.Scopes) != 3 || p.Issuer != "https://idp.example.com/" ||
 		a.OIDC.Providers[1].Title != "Local" || c.NATS.Audit.SubjectPrefix != "aif.audit.v1" {
 		t.Fatalf("defaults: %+v %+v", a, p)
@@ -208,6 +209,8 @@ func TestValidate(t *testing.T) {
 		"oidc http public_url":       db + "admin: {public_url: http://admin.example.com, oidc: {providers: [{name: sso, issuer: https://idp.example.com, client_id: c}]}}",
 		"oidc bad name":              db + oidc("{name: Big SSO, issuer: https://idp.example.com, client_id: c}"),
 		"oidc no client_id":          db + oidc("{name: sso, issuer: https://idp.example.com}"),
+		"auto_redirect unknown":      db + "admin: {public_url: https://a.example.com, oidc: {auto_redirect: other, providers: [{name: sso, issuer: https://i.example.com, client_id: c}]}}",
+		"auto_redirect no provider":  db + "admin: {oidc: {auto_redirect: sso}}",
 		"oidc http issuer":           db + oidc("{name: sso, issuer: http://idp.example.com, client_id: c}"),
 		"oidc name twice":            db + oidc("{name: sso, issuer: https://i.example.com, client_id: c}, {name: sso, issuer: https://j.example.com, client_id: c}"),
 		"oidc session_ttl":           db + "admin: {public_url: https://a.example.com, oidc: {session_ttl: 1s}}",

@@ -215,6 +215,8 @@ export interface AdminUser {
 export interface AuthMethods {
   password: boolean
   oidc: { name: string, title: string }[]
+  /** Provider the sign-in page goes to without a click; empty when off (spec-0001 section 6.4). */
+  auto_redirect: string
 }
 
 /** An OIDC login linked to an account (GET /auth/identities, /users/{id}/identities). */

@@ -31,6 +31,17 @@ func (b *browser) oidcLogin(name string) {
 	}
 }
 
+// oidcAdmin makes an admin account linked to the IdP and returns a browser signed in as it.
+// With OIDC on, the local account has no password sign-in (D43), so tests sign in this way.
+func (e *env) oidcAdmin(idp *fakeIDP, email string) *browser {
+	e.t.Helper()
+	e.createOIDCUser(email, "admin")
+	idp.as(idpUser{Sub: "sub-" + email, Email: email, Verified: true})
+	b := e.browser()
+	b.oidcLogin("sso")
+	return b
+}
+
 // createOIDCUser adds an account (no password) with the master key and allows its first link.
 func (e *env) createOIDCUser(email, role string) string {
 	e.t.Helper()
@@ -51,8 +62,13 @@ func TestAdminOIDCLoginAndLinks(t *testing.T) {
 	e := newEnv(t, withIDP(idp.provider("sso")))
 
 	code, body := e.do(e.admin.URL, "GET", "/admin/v1/auth/methods", "", "")
-	if code != 200 || !strings.Contains(body, `"password":true`) || !strings.Contains(body, `{"name":"sso","title":"Fake sso"}`) {
+	if code != 200 || !strings.Contains(body, `"password":false`) || !strings.Contains(body, `{"name":"sso","title":"Fake sso"}`) ||
+		!strings.Contains(body, `"auto_redirect":""`) {
 		t.Fatalf("methods: %d %s", code, body)
+	}
+	// With OIDC on, the local account has no password sign-in (D43).
+	if code, out, _ := e.browser().do("POST", "/admin/v1/auth/login", `{"email":"`+bootEmail+`","password":"`+bootPassword+`"}`); code != 403 || !strings.Contains(out, "password_login_off") {
+		t.Fatalf("password with OIDC on: %d %s", code, out)
 	}
 
 	// Without an account, or before a link is allowed, the login is refused.
@@ -350,4 +366,22 @@ func TestAdminOIDCSessionTTL(t *testing.T) {
 		return
 	}
 	t.Fatal("no session cookie")
+}
+
+// auto_redirect is in methods, and a failed start lands on the sign-in page with an error,
+// where the UI does not redirect again (spec-0001 section 6.4).
+func TestAdminOIDCAutoRedirect(t *testing.T) {
+	t.Parallel()
+	idp := newFakeIDP(t)
+	e := newEnv(t, withIDP(idp.provider("sso")), func(c *config.Config) { c.Admin.OIDC.AutoRedirect = "sso" })
+	if code, body := e.do(e.admin.URL, "GET", "/admin/v1/auth/methods", "", ""); code != 200 || !strings.Contains(body, `"auto_redirect":"sso"`) {
+		t.Fatalf("methods: %d %s", code, body)
+	}
+	if code, body := e.browser().oidc("/admin/v1/auth/oidc/nope/start"); code != 404 || !strings.Contains(body, "/login?error=Unknown") {
+		t.Fatalf("unknown provider: %d %s", code, body)
+	}
+	idp.as(idpUser{Sub: "x", Email: "x@example.com", Verified: true})
+	if code, body := e.browser().oidc("/admin/v1/auth/oidc/sso/start"); code != 403 || !strings.Contains(body, "/login?error=") {
+		t.Fatalf("not linked: %d %s", code, body)
+	}
 }

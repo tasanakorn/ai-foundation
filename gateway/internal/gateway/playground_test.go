@@ -44,8 +44,7 @@ func TestPlayground(t *testing.T) {
 		t.Fatalf("not signed in: %d", resp.StatusCode)
 	}
 
-	b := e.browser()
-	b.mustLogin(bootEmail, bootPassword)
+	b := e.oidcAdmin(idp, "ann@example.com")
 	if resp, out := b.playground("chat/completions", "", `{"model":"small"}`); resp.StatusCode != 400 || !strings.Contains(out, "missing_api_key") {
 		t.Fatalf("no key: %d %s", resp.StatusCode, out)
 	}

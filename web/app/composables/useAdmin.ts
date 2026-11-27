@@ -30,7 +30,8 @@ export function useSession() {
     }
     finally {
       me.value = null
-      await navigateTo('/login')
+      // No auto redirect here: the IdP session would sign the user straight back in.
+      await navigateTo('/login?signed_out=1')
     }
   }
 
@@ -45,10 +46,36 @@ export function useAdminApi() {
     onResponseError({ response }) {
       if (response.status === 401) {
         me.value = null
-        navigateTo('/login')
+        navigateTo(loginPath(window.location.pathname + window.location.search))
       }
     },
   })
+}
+
+const NEXT_KEY = 'aif-next'
+
+/** A local path only, so a link cannot send the browser to another site after sign-in. */
+export function safeNext(p: unknown): string {
+  return typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') && !p.startsWith('/\\') && !p.startsWith('/login') ? p : ''
+}
+
+/** The sign-in page, keeping the page that was asked for. */
+export function loginPath(from: string): string {
+  const next = safeNext(from)
+  return next && next !== '/' ? `/login?next=${encodeURIComponent(next)}` : '/login'
+}
+
+/** Keeps the deep link across the IdP round trip (the IdP returns to /). */
+export function keepNext(next: string) {
+  if (safeNext(next)) sessionStorage.setItem(NEXT_KEY, next)
+  else sessionStorage.removeItem(NEXT_KEY)
+}
+
+/** The kept deep link, once. */
+export function takeNext(): string {
+  const next = safeNext(sessionStorage.getItem(NEXT_KEY))
+  sessionStorage.removeItem(NEXT_KEY)
+  return next
 }
 
 /** Readable message from an admin API error (OpenAI error shape). */

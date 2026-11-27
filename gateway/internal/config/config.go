@@ -128,7 +128,8 @@ type Admin struct {
 	SessionTTL   time.Duration  `yaml:"session_ttl"`   // browser login lifetime; default 12h
 	CookieSecure string         `yaml:"cookie_secure"` // auto (HTTPS or X-Forwarded-Proto: https), always, never
 	Bootstrap    AdminBootstrap `yaml:"bootstrap"`
-	// PasswordLogin false turns off the local account's password too; default true.
+	// PasswordLogin false turns off the local account's password even without OIDC; default
+	// true. With any OIDC provider the password is off anyway (D43).
 	PasswordLogin *bool `yaml:"password_login"`
 	// PublicURL is the admin URL the IdP redirects back to (never taken from the Host header).
 	PublicURL string    `yaml:"public_url"`
@@ -148,6 +149,8 @@ type AdminBootstrap struct {
 type AdminOIDC struct {
 	SessionTTL time.Duration  `yaml:"session_ttl"` // sessions from an OIDC login; default admin.session_ttl
 	Providers  []OIDCProvider `yaml:"providers"`
+	// AutoRedirect names a provider the sign-in page goes to without a click (spec-0001 section 6.4).
+	AutoRedirect string `yaml:"auto_redirect"`
 }
 
 // OIDCProvider is one identity provider. Name is used in URLs, Title on the button.
@@ -163,8 +166,11 @@ type OIDCProvider struct {
 	GroupsClaim   string   `yaml:"groups_claim"`   // default groups
 }
 
-// PasswordLoginOn reports whether the local account may sign in with its password.
-func (a Admin) PasswordLoginOn() bool { return a.PasswordLogin == nil || *a.PasswordLogin }
+// PasswordLoginOn reports whether the local account may sign in with its password: only
+// while no OIDC provider is set (D43), and admin.password_login is not false.
+func (a Admin) PasswordLoginOn() bool {
+	return len(a.OIDC.Providers) == 0 && (a.PasswordLogin == nil || *a.PasswordLogin)
+}
 
 // MinPasswordLen is the shortest password accepted for admin accounts.
 const MinPasswordLen = 12
@@ -922,6 +928,9 @@ func (a Admin) validateOIDC() error {
 		return fmt.Errorf("admin.oidc.session_ttl must be at least 1m")
 	}
 	if len(a.OIDC.Providers) == 0 {
+		if a.OIDC.AutoRedirect != "" {
+			return fmt.Errorf("admin.oidc.auto_redirect %q: no provider is set in admin.oidc.providers", a.OIDC.AutoRedirect)
+		}
 		return nil
 	}
 	if err := checkHTTPSURL("admin.public_url", a.PublicURL); err != nil {
@@ -942,6 +951,9 @@ func (a Admin) validateOIDC() error {
 		if err := checkHTTPSURL(field+".issuer", p.Issuer); err != nil {
 			return err
 		}
+	}
+	if a.OIDC.AutoRedirect != "" && !seen[a.OIDC.AutoRedirect] {
+		return fmt.Errorf("admin.oidc.auto_redirect %q: not a provider in admin.oidc.providers", a.OIDC.AutoRedirect)
 	}
 	return nil
 }

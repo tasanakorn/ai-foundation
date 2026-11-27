@@ -26,23 +26,25 @@ admin:
   # "off" disables it. Put TLS in front (reverse proxy) when it is public.
   listen: ${AIF_ADMIN_LISTEN:-127.0.0.1:8081}
   # ui_dir: ./web/.output/public   # serve the built web UI here
-  # People sign in through an OIDC identity provider (admin.oidc), or with the one local
-  # account below (break-glass). Add accounts in the UI or with `aif admin create-user`.
+  # People sign in through an OIDC identity provider (admin.oidc), or, while no provider is
+  # set, with the one local account below. Add accounts in the UI or with `aif admin create-user`.
   session_ttl: 12h            # browser login lifetime
   cookie_secure: auto         # auto = Secure cookie on HTTPS (or X-Forwarded-Proto: https); always; never
-  # The local account: the only account with a password, for when the IdP is down. Read on
-  # every start; changing the password here and restarting ends its sessions. Every use is
-  # logged and published on aif.audit.v1.breakglass.
+  # The local account: the only account with a password, and only while admin.oidc has no
+  # provider (when the IdP is down, remove admin.oidc and restart). Read on every start;
+  # changing the password here and restarting ends its sessions. Every use is logged and
+  # published on aif.audit.v1.breakglass.
   bootstrap:
     email: ${AIF_ADMIN_EMAIL:-}
     password: ${AIF_ADMIN_PASSWORD:-}            # plain, for local development
     password_hash: ${AIF_ADMIN_PASSWORD_HASH:-}  # production: `aif admin hash-password`; set one of the two
-  password_login: true        # false: the local account's password is off too (OIDC and master key only)
+  password_login: true        # false: the local password is off even without OIDC (master key only)
   # Sign-in through OIDC identity providers (Rauthy, Authentik, Keycloak, Google, ...).
   # Register <public_url>/admin/v1/auth/oidc/<name>/callback as the redirect URL at the IdP.
   # public_url: https://admin.example.com
   # oidc:
   #   session_ttl: 1h         # sessions from an OIDC sign-in; default session_ttl
+  #   auto_redirect: sso      # go straight to this provider, no sign-in page (not after an error or sign-out)
   #   providers:
   #     - name: sso           # in URLs; a-z, 0-9, -
   #       title: Company SSO  # button text

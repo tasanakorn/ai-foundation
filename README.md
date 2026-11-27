@@ -5,7 +5,7 @@ A small, fast LLM gateway. Think "minimal LiteLLM / OpenRouter core" in one Go b
 1. One OpenAI-compatible API in front of OpenRouter, Anthropic (Claude API) and local LLMs (llama.cpp, vLLM).
 2. API keys with owner labels (tenant, app, end user).
 3. Token and cost metering per request, including streams.
-4. Admin sign-in through any OIDC identity provider (2FA, passkeys and Google login come from the IdP), plus one local break-glass account with a password; admin / viewer roles, admin API and web UI.
+4. Admin sign-in through any OIDC identity provider (2FA, passkeys and Google login come from the IdP), or one local account with a password when no IdP is set; admin / viewer roles, admin API and web UI.
 5. Everything else plugs in from outside over NATS (required): usage events, a pre-request hook (allow / deny / modify), and key revocation across nodes.
 6. Backing services: PostgreSQL and NATS (JetStream), both required.
 
@@ -126,9 +126,9 @@ make build    # web/.output/public + gateway/bin/aif (version from the tag)
 2. Run PostgreSQL and set `DATABASE_URL`. Migrations run at startup.
 3. Run NATS with JetStream (`nats-server --jetstream`) and set `nats.url`.
 4. Admin sign-in ([spec-0001](docs/specs/spec-0001-gateway-core-architecture.md) sections 6.1 and 6.3):
-   1. The local account (break-glass): set `AIF_ADMIN_EMAIL` and `AIF_ADMIN_PASSWORD_HASH` (make it with `aif admin hash-password`). It is the only account with a password, read on every start. Every use is logged and published on `aif.audit.v1.breakglass`.
+   1. The local account: set `AIF_ADMIN_EMAIL` and `AIF_ADMIN_PASSWORD_HASH` (make it with `aif admin hash-password`). It is the only account with a password, read on every start, and it works only while no OIDC provider is set (D43). Every use is logged and published on `aif.audit.v1.breakglass`.
    2. Everyone else: add an OIDC identity provider in `admin.oidc` with `admin.public_url`, and register `<public_url>/admin/v1/auth/oidc/<name>/callback` at the IdP. Add each person on the Admins page (or `aif admin create-user`); their first sign-in within 24 hours links the account. Use `allowed_groups` when the IdP also has users who sign up by themselves.
-   3. Once OIDC works, you may set `admin.password_login: false`. Keep `admin.master_key` empty unless scripts need it.
+   3. Once a provider is set, password sign-in is off. Link at least one other admin to the IdP first: sign in with the local account, add the account, then add the provider and restart. `admin.oidc.auto_redirect: <name>` skips the sign-in page. When the IdP is down, remove `admin.oidc` and restart to use the local account again. Keep `admin.master_key` empty unless scripts need it.
 5. Set `admin.ui_dir` to the built `web/.output/public` to serve the UI on the admin port.
 6. `aif serve -config aif.yaml`. The admin port listens on `127.0.0.1:8081` by default; set `AIF_ADMIN_LISTEN=0.0.0.0:8081` (or `admin.listen`) for public access, behind TLS (`admin.cookie_secure: auto` marks the cookie Secure on HTTPS). `/healthz` is 503 while NATS or PostgreSQL is down.
 7. Behind a reverse proxy (ingress, CDN, load balancer), set `server.trusted_proxies` (`AIF_TRUSTED_PROXIES`) to the proxy addresses and `server.client_ip_header` if it is not `X-Forwarded-For`. Otherwise every admin sign-in looks like it comes from the proxy, and the per-IP sign-in throttle hits everyone at once. Make the proxy the only way in: a client that reaches the gateway directly can set the header too.

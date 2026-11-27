@@ -129,13 +129,23 @@ func TestAdminRolesAndAccounts(t *testing.T) {
 	t.Parallel()
 	idp := newFakeIDP(t)
 	e := newEnv(t, withIDP(idp.provider("sso")))
-	a := e.browser()
-	a.mustLogin(bootEmail, bootPassword)
-	code, me, _ := a.do("GET", "/admin/v1/auth/me", "")
-	var self struct{ User struct{ ID string } }
-	_ = json.Unmarshal([]byte(me), &self)
-	if code != 200 || self.User.ID == "" || !strings.Contains(me, `"local":true`) {
-		t.Fatalf("me: %d %s", code, me)
+	a := e.oidcAdmin(idp, "ann@example.com")
+	code, list := e.do(e.admin.URL, "GET", "/admin/v1/users", masterKey, "")
+	var users struct {
+		Data []struct {
+			ID    string
+			Local bool
+		}
+	}
+	_ = json.Unmarshal([]byte(list), &users)
+	var self struct{ User struct{ ID string } } // the local account
+	for _, u := range users.Data {
+		if u.Local {
+			self.User.ID = u.ID
+		}
+	}
+	if code != 200 || self.User.ID == "" {
+		t.Fatalf("users: %d %s", code, list)
 	}
 
 	for name, body := range map[string]string{
@@ -157,7 +167,7 @@ func TestAdminRolesAndAccounts(t *testing.T) {
 	if code, _, _ := a.do("POST", "/admin/v1/users/"+viewerID+"/identities/allow", ""); code != 200 {
 		t.Fatal("allow viewer link")
 	}
-	if code := e.browser().login("viewer@example.com", "anything-long-enough"); code != 401 {
+	if code := e.browser().login("viewer@example.com", "anything-long-enough"); code != 403 { // no password with OIDC on (D43)
 		t.Fatalf("viewer password login: %d", code)
 	}
 	if code, _, _ := a.do("PATCH", "/admin/v1/users/"+viewerID, `{"password":"long-enough-password"}`); code != 400 {
