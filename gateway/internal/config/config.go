@@ -275,8 +275,43 @@ func Parse(raw []byte) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	for i := range cfg.Providers {
-		p := &cfg.Providers[i]
+	setKeyRefs(cfg.Providers, fromEnv)
+	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// CatalogOnly is only the catalog part of a config file: what `aif catalog export`
+// writes and `aif catalog import` reads.
+type CatalogOnly struct {
+	Passthrough bool       `yaml:"passthrough"`
+	Providers   []Provider `yaml:"providers"`
+	Models      []Model    `yaml:"models"`
+}
+
+// ParseCatalog reads a catalog file: ${VAR} expansion, key references, defaults and
+// the catalog checks. Other sections are ignored.
+func ParseCatalog(raw []byte) (*CatalogOnly, error) {
+	var cf CatalogOnly
+	expanded, fromEnv := expandEnv(string(raw))
+	if err := yaml.Unmarshal([]byte(expanded), &cf); err != nil {
+		return nil, fmt.Errorf("parse catalog: %w", err)
+	}
+	setKeyRefs(cf.Providers, fromEnv)
+	NormalizeCatalog(cf.Providers, cf.Models)
+	if err := ValidateCatalog(cf.Providers, cf.Models); err != nil {
+		return nil, err
+	}
+	return &cf, nil
+}
+
+// setKeyRefs fills Provider.KeyRef: api_key written as env:NAME or file:/path is a
+// reference; a value that came from ${NAME} becomes env:NAME.
+func setKeyRefs(providers []Provider, fromEnv map[string]string) {
+	for i := range providers {
+		p := &providers[i]
 		switch {
 		case strings.HasPrefix(p.APIKey, "env:") || strings.HasPrefix(p.APIKey, "file:"):
 			p.KeyRef, p.APIKey = p.APIKey, ""
@@ -286,11 +321,6 @@ func Parse(raw []byte) (*Config, error) {
 			}
 		}
 	}
-	cfg.applyDefaults()
-	if err := cfg.validate(); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
 }
 
 var envPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)

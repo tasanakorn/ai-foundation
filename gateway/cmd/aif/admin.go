@@ -104,7 +104,10 @@ func adminCommand(args []string) error {
 }
 
 // readPassword asks twice on a terminal (no echo), or reads the first line of stdin.
-func readPassword() (string, error) {
+func readPassword() (string, error) { return readSecret("Password", true) }
+
+// readSecret asks on a terminal (no echo; twice with repeat), or reads the first line of stdin.
+func readSecret(label string, repeat bool) (string, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -113,20 +116,20 @@ func readPassword() (string, error) {
 		}
 		return strings.TrimRight(line, "\r\n"), nil
 	}
-	fmt.Fprint(os.Stderr, "Password: ")
+	fmt.Fprint(os.Stderr, label+": ")
 	a, err := term.ReadPassword(fd)
 	fmt.Fprintln(os.Stderr)
-	if err != nil {
-		return "", err
+	if err != nil || !repeat {
+		return string(a), err
 	}
-	fmt.Fprint(os.Stderr, "Repeat password: ")
+	fmt.Fprint(os.Stderr, "Repeat "+strings.ToLower(label)+": ")
 	b, err := term.ReadPassword(fd)
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return "", err
 	}
 	if string(a) != string(b) {
-		return "", errors.New("passwords do not match")
+		return "", errors.New("the two entries do not match")
 	}
 	return string(a), nil
 }

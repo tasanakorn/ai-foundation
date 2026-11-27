@@ -85,7 +85,7 @@ New setting `catalog.mode`:
 2. Write, admin role, database mode only: `POST`, `PATCH` and `DELETE` on `/admin/v1/providers/{name}`, `/admin/v1/providers/{name}/accounts/{account}` and `/admin/v1/models/{name}`.
 3. Every write sends the revision it was based on (`If-Match: <revision>`). A stale revision gets `412`, so two admins cannot overwrite each other.
 4. `POST /admin/v1/catalog/validate` checks a whole catalog without saving it (for the UI and CI).
-5. CLI: `aif catalog export` writes the database catalog as YAML (references stay references, encrypted keys are left out). `aif catalog import -file x.yaml` replaces it in one transaction (database mode). These give backup and GitOps-style apply in database mode too.
+5. CLI: `aif catalog export` writes the database catalog as YAML (references stay references, encrypted keys are left out). `aif catalog import -file x.yaml` replaces it in one transaction (database mode). These give backup and GitOps-style apply in database mode too. Built with them: `aif catalog set-key -provider P [-account A]` (stores an encrypted key; the key is read from the terminal or stdin) and `aif catalog history`. Import keeps the encrypted key of an account that the file gives no key, so export then import loses nothing.
 
 ## 9. Decisions
 

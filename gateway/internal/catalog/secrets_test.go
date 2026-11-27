@@ -83,9 +83,14 @@ func TestKeyringRotation(t *testing.T) {
 		kr  *catalog.Keyring
 		acc store.CatalogAccount
 	}{
-		"no keyring":     {nil, a},
-		"key removed":    {keyring(t, newKey), a},
-		"tampered value": {old, func() store.CatalogAccount { c := a; c.KeyCipher = append([]byte(nil), a.KeyCipher...); c.KeyCipher[20] ^= 1; return c }()},
+		"no keyring":  {nil, a},
+		"key removed": {keyring(t, newKey), a},
+		"tampered value": {old, func() store.CatalogAccount {
+			c := a
+			c.KeyCipher = append([]byte(nil), a.KeyCipher...)
+			c.KeyCipher[20] ^= 1
+			return c
+		}()},
 	} {
 		err := use(tc.kr, tc.acc)
 		if err == nil || strings.Contains(err.Error(), secretValue) || strings.Contains(err.Error(), "WXYZ") {

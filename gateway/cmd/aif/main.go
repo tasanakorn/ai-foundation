@@ -27,9 +27,16 @@ const usage = `Usage:
   aif admin create-user -email E [-name N] [-role admin|viewer]
   aif admin reset-password -email E       set a new password, end all sessions
   aif admin list-users
+  aif catalog export [-out FILE]          write the database catalog as YAML (key references kept)
+  aif catalog import -file FILE [-if-revision N]
+                                          replace the catalog (database mode), in one transaction
+  aif catalog set-key -provider P [-account A]
+                                          store an encrypted provider key (needs catalog.secret_keys)
+  aif catalog history [-limit N]          list catalog revisions
   aif version
 
-Admin commands read the password from the terminal (hidden) or from stdin (first line).
+Admin commands read the password, and set-key the provider key, from the terminal
+(hidden) or from stdin (first line).
 The config file is -config, else $AIF_CONFIG, else aif.yaml.
 `
 
@@ -52,6 +59,8 @@ func main() {
 		err = run(*cfgPath, log)
 	case "admin":
 		err = adminCommand(args)
+	case "catalog":
+		err = catalogCommand(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return

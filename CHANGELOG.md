@@ -12,6 +12,7 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 2. `catalog.mode`: `database` (default; the file seeds an empty database once) or `file` (the file is the source of truth, applied on change and on SIGHUP without a restart).
 3. Hot reload across nodes (task-0017): new control event `aif.control.v1.catalog_changed` `{type, revision, node, at}`, a revision poll (`catalog.poll_interval`, 30s), and metrics `aif_catalog_revision`, `aif_catalog_reloads_total`, `aif_catalog_last_reload_seconds`.
 4. Encrypted provider keys (task-0018): `catalog.secret_keys` (`AIF_CATALOG_SECRET_KEY`) and migration v5. Keys are stored as references or AES-256-GCM values, never returned.
+5. `aif catalog export | import | set-key | history` (task-0019): backup and apply the database catalog, store an encrypted provider key, list revisions.
 
 ### Changed
 

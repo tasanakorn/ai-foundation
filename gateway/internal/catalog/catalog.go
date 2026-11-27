@@ -75,6 +75,11 @@ func (h *Holder) Offer(s *Snapshot) bool {
 // stay as written. A key value written in the file is refused, because keys are never
 // stored in the database (spec-0006 D38).
 func FromFile(cfg *config.Config) (*store.Catalog, error) {
+	return FromCatalogFile(&config.CatalogOnly{Passthrough: cfg.Passthrough, Providers: cfg.Providers, Models: cfg.Models})
+}
+
+// FromCatalogFile is FromFile for a file that holds only the catalog (import).
+func FromCatalogFile(cfg *config.CatalogOnly) (*store.Catalog, error) {
 	c := &store.Catalog{Passthrough: cfg.Passthrough, Providers: []store.CatalogProvider{}, Models: []store.CatalogModel{}}
 	for _, p := range cfg.Providers {
 		ref := p.KeyRef
