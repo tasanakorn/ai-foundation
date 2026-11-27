@@ -225,7 +225,10 @@ func (a *App) bootstrapAdmin(ctx context.Context, c config.Admin, log *slog.Logg
 	if created {
 		log.Info("created the local admin account from admin.bootstrap", "email", c.Bootstrap.Email)
 	}
-	if c.Bootstrap.Email != "" && !c.PasswordLoginOn() {
+	switch {
+	case c.Bootstrap.Email != "" && len(c.OIDC.Providers) > 0:
+		log.Info("admin.oidc is set, so password sign-in is off: the local account cannot sign in until admin.oidc is removed")
+	case c.Bootstrap.Email != "" && !c.PasswordLoginOn():
 		log.Info("admin.password_login is off: the local account cannot sign in with its password")
 	}
 	if (c.Bootstrap.Email == "" || !c.PasswordLoginOn()) && len(c.OIDC.Providers) == 0 && c.MasterKey == "" {

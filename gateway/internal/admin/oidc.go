@@ -19,7 +19,8 @@ const FlowCookie = "aif_oidc"
 const flowPath = "/admin/v1/auth/oidc"
 
 func (h *Handler) methods(w http.ResponseWriter, r *http.Request) {
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"password": h.auth.PasswordLogin(), "oidc": h.oidc.Providers()})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"password": h.auth.PasswordLogin(), "oidc": h.oidc.Providers(),
+		"auto_redirect": h.oidc.AutoRedirect()})
 }
 
 // oidcStart sends the browser to the IdP. With ?link=1 a signed-in user links that IdP.
@@ -28,7 +29,7 @@ func (h *Handler) oidcStart(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("link") == "1" {
 		p, err := h.identify(r)
 		if err != nil || p.User == nil {
-			h.authPage(w, http.StatusUnauthorized, "Sign in first, then link a login from your account page.", "/login")
+			h.authPage(w, http.StatusUnauthorized, "Sign in first, then link a login from your account page.", loginError("Sign in first, then link a login from your account page."))
 			return
 		}
 		linkUser = p.User.ID
@@ -37,14 +38,14 @@ func (h *Handler) oidcStart(w http.ResponseWriter, r *http.Request) {
 	var ue *auth.UnavailableError
 	switch {
 	case errors.Is(err, auth.ErrUnknownProvider):
-		h.authPage(w, http.StatusNotFound, "Unknown identity provider.", "/login")
+		h.authPage(w, http.StatusNotFound, "Unknown identity provider.", loginError("Unknown identity provider."))
 		return
 	case errors.As(err, &ue):
-		h.authPage(w, http.StatusServiceUnavailable, ue.Error(), "/login")
+		h.authPage(w, http.StatusServiceUnavailable, ue.Error(), loginError(ue.Error()))
 		return
 	case err != nil:
 		h.log.Error("oidc start failed", "err", err)
-		h.authPage(w, http.StatusInternalServerError, "Sign-in could not start.", "/login")
+		h.authPage(w, http.StatusInternalServerError, "Sign-in could not start.", loginError("Sign-in could not start."))
 		return
 	}
 	h.setFlowCookie(w, r, flow, time.Now().Add(10*time.Minute))
@@ -77,17 +78,17 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.As(err, &re):
 		h.log.Warn("oidc sign-in refused", "provider", name, "ip", ip, "reason", re.Reason)
-		h.authPage(w, http.StatusForbidden, re.Msg, "/login?error="+url.QueryEscape(re.Msg))
+		h.authPage(w, http.StatusForbidden, re.Msg, loginError(re.Msg))
 		return
 	case errors.As(err, &ue):
-		h.authPage(w, http.StatusServiceUnavailable, ue.Error(), "/login?error="+url.QueryEscape(ue.Error()))
+		h.authPage(w, http.StatusServiceUnavailable, ue.Error(), loginError(ue.Error()))
 		return
 	case errors.Is(err, auth.ErrUnknownProvider):
-		h.authPage(w, http.StatusNotFound, "Unknown identity provider.", "/login")
+		h.authPage(w, http.StatusNotFound, "Unknown identity provider.", loginError("Unknown identity provider."))
 		return
 	case err != nil:
 		h.log.Error("oidc callback failed", "provider", name, "err", err)
-		h.authPage(w, http.StatusInternalServerError, "Sign-in failed.", "/login")
+		h.authPage(w, http.StatusInternalServerError, "Sign-in failed.", loginError("Sign-in failed."))
 		return
 	}
 	if res.Linked {
@@ -97,6 +98,10 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	h.setCookie(w, r, res.Token, time.Now().Add(h.oidcTTL))
 	h.authPage(w, http.StatusOK, "Signed in.", "/")
 }
+
+// loginError is the sign-in page with an error. The page never redirects to the IdP while it
+// shows one, so a failed sign-in cannot loop (spec-0001 section 6.4).
+func loginError(msg string) string { return "/login?error=" + url.QueryEscape(msg) }
 
 var authPageTmpl = template.Must(template.New("p").Parse(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
