@@ -1,6 +1,6 @@
 # change-0008: Credit per provider account
 
-- Status: applied (on merge of its pull request; not in a release yet, see CHANGELOG [Unreleased])
+- Status: applied (released in v0.3.0)
 - Date: 2026-11-27
 - Related: [task-0010](../tasks/task-0010-anthropic-credit-awareness.md); [spec-0002](../specs/spec-0002-anthropic-api-and-credits.md) section 8; [spec-0004](../specs/spec-0004-provider-accounts-and-policy.md); [spec-0006](../specs/spec-0006-catalog-database-hot-reload.md); [product](../products/ai-foundation.md) goal 3.1
 
