@@ -165,7 +165,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // listProviders shows each provider with its policy and accounts, as this node sees
-// them (cooldowns are per node, spec-0004 section 8). Never a key. An account with a
+// them (cooldowns are shared by all nodes, spec-0004 section 4.4). Never a key. An account with a
 // credit also gets its spend, from the usage table and ledger of all nodes (task-0010).
 func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	rt := h.routes.Router()

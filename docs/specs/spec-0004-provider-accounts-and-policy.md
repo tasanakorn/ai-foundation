@@ -80,7 +80,13 @@ Weighted round robin, 3:1 (plan-a gets 3 of every 4 requests):
 
 ### 4.4 State
 
-1. State (round-robin position, cooldowns) is per node, in memory, like the sign-in throttle. Nodes do not share it. This is fine for 1-3 nodes; shared state is out of scope.
+1. Account state (rest until, last error) is shared by all nodes (D40, change-0012):
+   1. A node that rests an account, or ends a rest because a call succeeded, writes the state to the NATS JetStream KV bucket `AIF_ACCOUNT_STATE` (`nats.state.bucket`).
+   2. Every node watches the bucket and applies newer entries to its own copy in memory. Requests read only that copy; they never wait for NATS.
+   3. A node that starts or reconnects loads the bucket; after a reconnect it writes its own rests again.
+   4. Key `<provider>.<account>` (other characters in the provider name: `b64_<base64url>`). Value: JSON `provider`, `account`, `until`, `last_error`, `last_error_at`, `node`, `at`. The newest `at` wins. Entries expire after 24h.
+   5. Without JetStream, or while NATS is down, each node keeps its own state, as before.
+2. Still per node, in memory: the round-robin position (weights hold over many requests) and the sign-in throttle. Sticky selection is a hash, so every node picks the same account.
 
 ## 5. Failover
 
@@ -117,7 +123,7 @@ Weighted round robin, 3:1 (plan-a gets 3 of every 4 requests):
 
 ## 8. Admin API and UI
 
-1. `GET /admin/v1/providers` (new, any role): each provider with its policy and accounts: `name`, `state` (`ok` or `cooldown`), `cooldown_until`, `last_error` (status and short text), per node. Never the key.
+1. `GET /admin/v1/providers` (new, any role): each provider with its policy and accounts: `name`, `state` (`ok` or `cooldown`), `cooldown_until`, `last_error` (status and short text), shared by all nodes (section 4.4). Never the key.
 2. Usage list and filters get `account`. The web UI shows it in the usage table and a small "Providers" page (types in `web/app/types/admin.ts` change with the API).
 
 ## 9. Design in code
@@ -134,8 +140,9 @@ Weighted round robin, 3:1 (plan-a gets 3 of every 4 requests):
 | D26 | Two policies only: `priority` (default) and `round_robin` (weighted, smooth), plus `sticky` | Covers credits-first, even load and ratios; easy to reason about |
 | D27 | Fail over only before the first byte to the client                                          | A started stream cannot be replayed safely                       |
 | D28 | Retry only on errors another account can fix (table 5.3)                                    | A bad request fails the same on every account                    |
-| D29 | Per-node, in-memory state                                                                   | No new shared store; good enough for a few nodes                 |
+| D29 | ~~Per-node, in-memory state~~                                                               | Replaced by D40 (change-0012)                                    |
 | D30 | `account` and `attempts` are additive fields in DB and NATS v1                              | Keeps the public contract                                        |
+| D40 | Account state shared through a NATS KV bucket; each node keeps a copy in memory             | One system; NATS is already required; no wait on the hot path    |
 
 ## 11. Open questions
 

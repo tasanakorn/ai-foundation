@@ -12,10 +12,15 @@ import (
 )
 
 // Run starts a server on a random port and returns its client URL.
-func Run(t testing.TB) string {
+func Run(t testing.TB) string { return run(t, true) }
+
+// RunWithoutJetStream starts a server without JetStream.
+func RunWithoutJetStream(t testing.TB) string { return run(t, false) }
+
+func run(t testing.TB, jetStream bool) string {
 	t.Helper()
 	ns, err := server.NewServer(&server.Options{
-		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
+		Host: "127.0.0.1", Port: -1, JetStream: jetStream, StoreDir: t.TempDir(),
 		NoLog: true, NoSigs: true,
 	})
 	if err != nil {

@@ -182,7 +182,7 @@ export interface ProviderState {
   accounts: AccountState[]
 }
 
-/** State is per node: the node that answered is named. */
+/** Account state is shared by all nodes (spec-0004 D40); node is the node that answered. */
 export interface ProvidersResponse {
   node: string
   data: ProviderState[]

@@ -125,8 +125,8 @@ async function addEntry() {
         icon="i-lucide-info"
         color="neutral"
         variant="subtle"
-        title="Account state is per gateway node."
-        :description="`This page shows node ${data?.node ?? '?'}. An account rests after a rate limit, outage or bad key, and the next account takes its requests. Credit spend is the cost the gateway metered on all nodes, so it can differ a little from the provider's bill.`"
+        title="Account state is shared by all gateway nodes."
+        description="An account rests after a rate limit, outage, bad key or no credits, and the next account takes its requests on every node. Credit spend is the cost the gateway metered, so it can differ a little from the provider's bill."
       />
 
       <UCard v-for="p in data?.data ?? []" :key="p.name">

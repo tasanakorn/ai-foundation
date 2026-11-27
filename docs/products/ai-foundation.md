@@ -16,6 +16,7 @@ A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI ag
    1. OpenRouter (hundreds of models with one key).
    2. Any direct OpenAI-compatible API (OpenAI, Groq, Together, vLLM, Ollama, LM Studio, …).
    3. Anthropic directly, including the monthly API credits of Claude Max, Ultra and Team plans.
+   4. Several accounts per provider, shared by all gateway nodes as one system: when one node sees a key rest (rate limit, outage, no credits), every node skips it ([change-0012](../changes/change-0012-shared-account-state.md)).
 3. **Metering.** Count tokens and cost for every request, including streams.
    1. **Credit per provider account.** Each account has one credit type: a monthly plan credit, a pay-as-you-go budget, or a prepaid balance. The admin sees how much is used or left, with a warning at 80 percent. Prepaid top-ups are recorded in the database ([change-0008](../changes/change-0008-credit-per-account.md)).
 4. **API keys.** Simple keys that are easy to map to tenants, apps, and end users.

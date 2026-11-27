@@ -56,6 +56,7 @@ type BuildOptions struct {
 	Client   *http.Client
 	Observer Observer     // optional: counts upstream attempts
 	Log      *slog.Logger // optional: failed attempts
+	Sync     StateSync    // optional: shares cooldowns with the other nodes (D40)
 }
 
 // Build creates one Pool per provider, keyed by name. Each account becomes one client

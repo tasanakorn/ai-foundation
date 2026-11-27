@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,4 +271,81 @@ func TestAccountCredit(t *testing.T) {
 	if r := e.usage()[0]; r.StatusCode != http.StatusPaymentRequired || r.Account != "only" || !strings.HasPrefix(r.Error, "provider_credit_exhausted") {
 		t.Fatalf("usage record: %+v", r)
 	}
+}
+
+// Account state is one system (spec-0004 section 4.4, D40): a rest seen by one node
+// makes the other node skip the account too, and both show the same state.
+func TestAccountStateShared(t *testing.T) {
+	t.Parallel()
+	a := newEnv(t)
+	b := a.peer()
+	ctx := context.Background()
+	var hits atomic.Int32
+	limited := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":{"message":"rate limited"}}`)
+	}))
+	defer limited.Close()
+
+	c, err := catalog.Update(ctx, a.st, store.AnyRevision, "test", "two accounts", func(c *store.Catalog) error {
+		c.Providers = append(c.Providers, store.CatalogProvider{Name: "multi", Type: "openai", BaseURL: a.upURL + "/v1",
+			Accounts: []store.CatalogAccount{
+				{Name: "plan-a", KeyRef: "env:AIF_TEST_UPSTREAM_KEY", BaseURL: limited.URL + "/v1"},
+				{Name: "plan-b", KeyRef: "env:AIF_TEST_UPSTREAM_KEY"},
+			}})
+		c.Models = append(c.Models, store.CatalogModel{Name: "multi-model", Targets: []store.CatalogTarget{{Provider: "multi", Upstream: "vendor/m"}}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.app.Catalogs.Committed(ctx, c.Revision); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the peer on the new catalog", func() bool { return b.app.Catalog.Revision() == c.Revision })
+
+	secret, _ := a.createKey(`{}`)
+	body := `{"model":"multi-model","messages":[{"role":"user","content":"hi"}]}`
+	if code, out := a.do(a.gw.URL, "POST", "/v1/chat/completions", secret, body); code != 200 {
+		t.Fatalf("node a: %d %s", code, out)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("plan-a hits after node a: %d", hits.Load())
+	}
+
+	planA := func(e *env) map[string]any {
+		_, out := e.do(e.admin.URL, "GET", "/admin/v1/providers", masterKey, "")
+		var resp struct {
+			Data []struct {
+				Name     string
+				Accounts []map[string]any
+			}
+		}
+		_ = json.Unmarshal([]byte(out), &resp)
+		for _, p := range resp.Data {
+			if p.Name == "multi" {
+				return p.Accounts[0]
+			}
+		}
+		return nil
+	}
+	eventually(t, "plan-a resting on node b", func() bool { s := planA(b); return s != nil && s["state"] == "cooldown" })
+	sa, sb := planA(a), planA(b)
+	if sa["cooldown_until"] != sb["cooldown_until"] || sa["last_error"] != sb["last_error"] {
+		t.Fatalf("nodes differ:\na %v\nb %v", sa, sb)
+	}
+
+	// Node b never saw the 429 itself, but it skips plan-a.
+	if code, out := b.do(b.gw.URL, "POST", "/v1/chat/completions", secret, body); code != 200 {
+		t.Fatalf("node b: %d %s", code, out)
+	}
+	if r := b.usage()[0]; r.Account != "plan-b" || r.Attempts != 1 || hits.Load() != 1 {
+		t.Fatalf("node b tried plan-a: account %q attempts %d hits %d", r.Account, r.Attempts, hits.Load())
+	}
+
+	// A node that starts now loads the rest from the bucket.
+	late := a.peer()
+	eventually(t, "plan-a resting on a late node", func() bool { s := planA(late); return s != nil && s["state"] == "cooldown" })
 }

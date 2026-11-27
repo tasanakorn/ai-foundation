@@ -59,6 +59,8 @@ nats:
     max_age: 720h                  # retention, used only when the gateway creates the stream
   control:
     subject_prefix: aif.control.v1 # key_revoked: every node drops the key at once
+  state:
+    bucket: AIF_ACCOUNT_STATE      # JetStream KV: provider account rests, shared by all nodes
   hooks:
     pre_request:                   # request/reply: allow, deny or modify before upstream
       subject: ""                  # empty = off, e.g. aif.hook.pre_request.v1
