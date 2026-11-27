@@ -6,6 +6,17 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+OIDC-only sign-in and auto redirect (change-0014). Upgrade notes: **breaking**. No database migration. With any provider in `admin.oidc.providers`, the local account can no longer sign in with its password. Before upgrading, make sure another active `admin` account is linked to the IdP. When the IdP is down, remove `admin.oidc` and restart to use the local account. Going back to 0.5.0 needs no data change.
+
+### Added
+
+1. `admin.oidc.auto_redirect: <provider>` (change-0014, spec-0001 section 6.4): the sign-in page goes straight to that IdP. It does not redirect after an error or a sign-out (a "Signed out" page with a button), so it cannot loop. The page first opened is kept through the sign-in. `GET /admin/v1/auth/methods` gains `auto_redirect`.
+
+### Changed
+
+1. **Breaking:** password sign-in works only while no OIDC provider is set (D43). With one, `POST /admin/v1/auth/login` returns `403 password_login_off`, `methods` says `password: false`, and the sign-in page has no break-glass link. `admin.password_login: false` still turns the password off without OIDC.
+2. A failed `/admin/v1/auth/oidc/{name}/start` (unknown provider, IdP down) now lands on `/login?error=...` with the message.
+
 ## [0.5.0] - 2026-11-27
 
 Admin sign-in through OIDC, and one local account (change-0013). Upgrade notes: **breaking**. Migration v9 runs at startup and only adds a column and two tables; going back needs the manual SQL in change-0013 section 5. Only the account in `admin.bootstrap` can sign in with a password after the upgrade: before upgrading, set up an identity provider in `admin.oidc` and, after the upgrade, allow a login link for each other account on the Admins page.
