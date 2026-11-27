@@ -6,6 +6,10 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-27
+
+Shared provider account state across gateway nodes (change-0012). Upgrade notes: no database migration. Nodes need NATS JetStream for the shared state (the first node creates the bucket); without it a node logs a warning and keeps its own state as in 0.3.0. During a rolling upgrade, 0.3.0 nodes neither send nor read the shared state. Going back to 0.3.0 needs no data change; the bucket can be left or deleted.
+
 ### Changed
 
 1. Provider account state is shared by all gateway nodes (change-0012, spec-0004 D40). A rest that one node sees (rate limit, outage, bad key, no credits) makes every node skip that account, and a node that starts or reconnects loads the current rests. It uses the NATS JetStream KV bucket `AIF_ACCOUNT_STATE` (`nats.state.bucket`), made by the first node. Without JetStream, each node keeps its own state as before. The Providers page shows one state for all nodes.
@@ -57,6 +61,7 @@ First tagged release.
    2. Prometheus metrics on their own listener (`metrics.listen`, default off).
    3. The public dev secrets are refused at startup unless `dev_mode: true`.
 
+[0.4.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.1.0
