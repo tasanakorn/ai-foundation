@@ -35,7 +35,8 @@ func (b *browser) playground(path, key, body string, hdr ...string) (*http.Respo
 
 func TestPlayground(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	idp := newFakeIDP(t)
+	e := newEnv(t, withIDP(idp.provider("sso")))
 	secret, keyID := e.createKey(`{"name":"pg","tenant_id":"acme","allowed_models":["small"]}`)
 
 	anon := e.browser()
@@ -90,11 +91,10 @@ func TestPlayground(t *testing.T) {
 	}
 
 	// Viewers may use it too (it changes no admin state), but not cross-origin.
-	if code, _, _ := b.do("POST", "/admin/v1/users", `{"email":"v@example.com","role":"viewer","password":"viewer-password-1"}`); code != 201 {
-		t.Fatal("create viewer")
-	}
+	e.createOIDCUser("v@example.com", "viewer")
+	idp.as(idpUser{Sub: "v", Email: "v@example.com", Verified: true})
 	v := e.browser()
-	v.mustLogin("v@example.com", "viewer-password-1")
+	v.oidcLogin("sso")
 	if resp, _ := v.playground("chat/completions", secret, `{"model":"small","messages":[]}`); resp.StatusCode != 200 {
 		t.Fatalf("viewer: %d", resp.StatusCode)
 	}

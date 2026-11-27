@@ -35,6 +35,25 @@ func adminCommand(args []string) error {
 	role := fs.String("role", store.RoleAdmin, "admin or viewer")
 	_ = fs.Parse(args)
 
+	if sub == "hash-password" { // needs no config or database
+		pw, err := readPassword()
+		if err != nil {
+			return err
+		}
+		if err := auth.CheckPassword(pw); err != nil {
+			return err
+		}
+		hash, err := auth.HashPassword(pw)
+		if err != nil {
+			return err
+		}
+		fmt.Println(hash)
+		fmt.Fprintln(os.Stderr, "Set it as AIF_ADMIN_PASSWORD_HASH (admin.bootstrap.password_hash) and restart; quote it, it contains $.")
+		return nil
+	}
+	if sub == "reset-password" {
+		return errors.New("reset-password is gone: the local account's password is set in config (AIF_ADMIN_PASSWORD or AIF_ADMIN_PASSWORD_HASH); change it and restart. Other accounts sign in through OIDC")
+	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
@@ -46,38 +65,19 @@ func adminCommand(args []string) error {
 		return err
 	}
 	defer st.Close()
-	svc := auth.NewService(st, cfg.Admin.SessionTTL, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := auth.NewService(st, auth.Options{SessionTTL: cfg.Admin.SessionTTL, LocalEmail: cfg.Admin.Bootstrap.Email,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 
 	switch sub {
 	case "create-user":
 		if *email == "" {
 			return errors.New("-email is required")
 		}
-		pw, err := readPassword()
+		u, err := svc.CreateUser(ctx, auth.CreateUserInput{Email: *email, Name: *name, Role: *role})
 		if err != nil {
 			return err
 		}
-		u, err := svc.CreateUser(ctx, auth.CreateUserInput{Email: *email, Name: *name, Role: *role, Password: pw})
-		if err != nil {
-			return err
-		}
-		fmt.Printf("created %s %s (%s)\n", u.ID, u.Email, u.Role)
-	case "reset-password":
-		if *email == "" {
-			return errors.New("-email is required")
-		}
-		pw, err := readPassword()
-		if err != nil {
-			return err
-		}
-		u, err := svc.ResetPassword(ctx, *email, pw)
-		if errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("no account with email %s", *email)
-		}
-		if err != nil {
-			return err
-		}
-		fmt.Printf("password set for %s; all its sessions ended\n", u.Email)
+		fmt.Printf("created %s %s (%s). It has no password: allow a one-time link in the UI, then the user signs in through OIDC\n", u.ID, u.Email, u.Role)
 	case "list-users":
 		users, err := st.ListAdminUsers(ctx)
 		if err != nil {
@@ -89,6 +89,9 @@ func adminCommand(args []string) error {
 			status, last := "active", "-"
 			if u.DisabledAt != nil {
 				status = "disabled"
+			}
+			if svc.IsLocal(&u) {
+				status += ", local"
 			}
 			if u.LastLoginAt != nil {
 				last = u.LastLoginAt.Format(time.RFC3339)

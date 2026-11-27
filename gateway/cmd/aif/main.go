@@ -26,8 +26,9 @@ var version = "dev"
 const usage = `Usage:
   aif [serve] [-config aif.yaml]          run the gateway
   aif admin create-user -email E [-name N] [-role admin|viewer]
-  aif admin reset-password -email E       set a new password, end all sessions
+                                          add an account that signs in through OIDC (no password)
   aif admin list-users
+  aif admin hash-password                 print an argon2id hash for AIF_ADMIN_PASSWORD_HASH
   aif catalog export [-out FILE]          write the database catalog as YAML (key references kept)
   aif catalog import -file FILE [-if-revision N]
                                           replace the catalog (database mode), in one transaction
@@ -40,7 +41,7 @@ const usage = `Usage:
                                           list the prepaid ledger
   aif version
 
-Admin commands read the password, and set-key the provider key, from the terminal
+hash-password reads the password, and set-key the provider key, from the terminal
 (hidden) or from stdin (first line).
 The config file is -config, else $AIF_CONFIG, else aif.yaml.
 `

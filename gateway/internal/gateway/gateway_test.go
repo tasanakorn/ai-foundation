@@ -107,9 +107,11 @@ func newEnv(t *testing.T, mut ...func(*config.Config)) *env {
 	return e
 }
 
-// peer starts a second node that shares the database, NATS and upstream.
-func (e *env) peer() *env {
+// peer starts a second node that shares the database, NATS and upstream. mut changes
+// only the peer's config.
+func (e *env) peer(mut ...func(*config.Config)) *env {
 	cp := *e
+	cp.mut = append(append([]func(*config.Config){}, e.mut...), mut...)
 	cp.start()
 	return &cp
 }
@@ -132,6 +134,12 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The admin server listens before the config is final, so tests can use its URL
+	// (admin.public_url for OIDC).
+	e.admin = httptest.NewUnstartedServer(nil)
+	t.Cleanup(e.admin.Close)
+	e.admin.URL = "http://" + e.admin.Listener.Addr().String()
+	cfg.Admin.PublicURL = e.admin.URL
 	for _, m := range e.mut {
 		m(cfg)
 	}
@@ -149,8 +157,8 @@ models:
 	e.app = a
 	e.gw = httptest.NewServer(a.Public)
 	t.Cleanup(e.gw.Close)
-	e.admin = httptest.NewServer(a.Admin)
-	t.Cleanup(e.admin.Close)
+	e.admin.Config.Handler = a.Admin
+	e.admin.Start()
 }
 
 func (e *env) do(base, method, path, token, body string, hdr ...string) (int, string) {

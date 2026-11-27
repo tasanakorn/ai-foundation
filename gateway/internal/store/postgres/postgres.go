@@ -237,6 +237,32 @@ var migrations = []string{
 	);
 	CREATE INDEX idx_credit_ledger_account ON credit_ledger (provider, account, at);
 	CREATE INDEX idx_usage_account ON usage_records (provider, account, created_at);`,
+
+	// v9: OIDC admin login (change-0013, spec-0001 section 6.3): login links, the
+	// one-time link allowance, and sign-ins in progress.
+	`ALTER TABLE admin_users ADD COLUMN link_allowed_until timestamptz;
+	CREATE TABLE admin_identities (
+		id            text PRIMARY KEY,
+		user_id       text NOT NULL REFERENCES admin_users (id) ON DELETE CASCADE,
+		provider      text NOT NULL DEFAULT '',
+		issuer        text NOT NULL,
+		subject       text NOT NULL,
+		email         text NOT NULL DEFAULT '',
+		created_at    timestamptz NOT NULL,
+		last_login_at timestamptz,
+		UNIQUE (issuer, subject)
+	);
+	CREATE INDEX idx_admin_identities_user ON admin_identities (user_id);
+	CREATE TABLE admin_oidc_flows (
+		id_hash       text PRIMARY KEY,
+		provider      text NOT NULL,
+		state         text NOT NULL,
+		nonce         text NOT NULL,
+		pkce_verifier text NOT NULL,
+		link_user_id  text NOT NULL DEFAULT '',
+		expires_at    timestamptz NOT NULL
+	);
+	CREATE INDEX idx_admin_oidc_flows_expires ON admin_oidc_flows (expires_at);`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start
@@ -478,11 +504,11 @@ func (s *Store) SummarizeUsage(ctx context.Context, f store.UsageFilter, groupBy
 
 // ---- admin users ----
 
-const userColumns = `id, email, name, role, password_hash, created_at, updated_at, last_login_at, disabled_at`
+const userColumns = `id, email, name, role, password_hash, created_at, updated_at, last_login_at, disabled_at, link_allowed_until`
 
 func (s *Store) CreateAdminUser(ctx context.Context, u *store.AdminUser) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO admin_users (`+userColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		u.ID, u.Email, u.Name, u.Role, u.PasswordHash, u.CreatedAt, u.UpdatedAt, u.LastLoginAt, u.DisabledAt)
+	_, err := s.pool.Exec(ctx, `INSERT INTO admin_users (`+userColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		u.ID, u.Email, u.Name, u.Role, u.PasswordHash, u.CreatedAt, u.UpdatedAt, u.LastLoginAt, u.DisabledAt, u.LinkAllowedUntil)
 	return mapErr(err)
 }
 
@@ -547,12 +573,107 @@ func (s *Store) SetAdminLastLogin(ctx context.Context, id string, at time.Time) 
 
 func scanUser(row pgx.Row) (*store.AdminUser, error) {
 	var u store.AdminUser
-	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &u.DisabledAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt, &u.DisabledAt, &u.LinkAllowedUntil); err != nil {
 		return nil, mapErr(err)
 	}
 	u.CreatedAt, u.UpdatedAt = u.CreatedAt.UTC(), u.UpdatedAt.UTC()
-	u.LastLoginAt, u.DisabledAt = utcPtr(u.LastLoginAt), utcPtr(u.DisabledAt)
+	u.LastLoginAt, u.DisabledAt, u.LinkAllowedUntil = utcPtr(u.LastLoginAt), utcPtr(u.DisabledAt), utcPtr(u.LinkAllowedUntil)
 	return &u, nil
+}
+
+// ---- OIDC links and flows ----
+
+func (s *Store) AllowAdminLink(ctx context.Context, userID string, until *time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE admin_users SET link_allowed_until = $2 WHERE id = $1`, userID, until)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ClaimAdminLink(ctx context.Context, userID string, now time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE admin_users SET link_allowed_until = NULL WHERE id = $1 AND link_allowed_until > $2`, userID, now)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+const identityColumns = `id, user_id, provider, issuer, subject, email, created_at, last_login_at`
+
+func (s *Store) CreateAdminIdentity(ctx context.Context, i *store.AdminIdentity) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO admin_identities (`+identityColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		i.ID, i.UserID, i.Provider, i.Issuer, i.Subject, i.Email, i.CreatedAt, i.LastLoginAt)
+	return mapErr(err)
+}
+
+func (s *Store) GetAdminIdentity(ctx context.Context, issuer, subject string) (*store.AdminIdentity, error) {
+	return scanIdentity(s.pool.QueryRow(ctx, `SELECT `+identityColumns+` FROM admin_identities WHERE issuer = $1 AND subject = $2`, issuer, subject))
+}
+
+func (s *Store) ListAdminIdentities(ctx context.Context, userID string) ([]store.AdminIdentity, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+identityColumns+` FROM admin_identities WHERE user_id = $1 ORDER BY created_at, id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.AdminIdentity{}
+	for rows.Next() {
+		i, err := scanIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *i)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteAdminIdentity(ctx context.Context, userID, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM admin_identities WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetAdminIdentityLogin(ctx context.Context, id, email string, at time.Time) error {
+	_, err := s.pool.Exec(ctx, `UPDATE admin_identities SET last_login_at = $2, email = $3 WHERE id = $1`, id, at, email)
+	return err
+}
+
+func scanIdentity(row pgx.Row) (*store.AdminIdentity, error) {
+	var i store.AdminIdentity
+	if err := row.Scan(&i.ID, &i.UserID, &i.Provider, &i.Issuer, &i.Subject, &i.Email, &i.CreatedAt, &i.LastLoginAt); err != nil {
+		return nil, mapErr(err)
+	}
+	i.CreatedAt, i.LastLoginAt = i.CreatedAt.UTC(), utcPtr(i.LastLoginAt)
+	return &i, nil
+}
+
+func (s *Store) CreateOIDCFlow(ctx context.Context, f *store.OIDCFlow) error {
+	if _, err := s.pool.Exec(ctx, `DELETE FROM admin_oidc_flows WHERE expires_at <= now()`); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `INSERT INTO admin_oidc_flows (id_hash, provider, state, nonce, pkce_verifier, link_user_id, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`, f.IDHash, f.Provider, f.State, f.Nonce, f.PKCEVerifier, f.LinkUserID, f.ExpiresAt)
+	return mapErr(err)
+}
+
+func (s *Store) TakeOIDCFlow(ctx context.Context, idHash string, now time.Time) (*store.OIDCFlow, error) {
+	var f store.OIDCFlow
+	err := s.pool.QueryRow(ctx, `DELETE FROM admin_oidc_flows WHERE id_hash = $1
+		RETURNING id_hash, provider, state, nonce, pkce_verifier, link_user_id, expires_at`, idHash).
+		Scan(&f.IDHash, &f.Provider, &f.State, &f.Nonce, &f.PKCEVerifier, &f.LinkUserID, &f.ExpiresAt)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if !f.ExpiresAt.After(now) {
+		return nil, store.ErrNotFound
+	}
+	return &f, nil
 }
 
 // ---- admin sessions ----

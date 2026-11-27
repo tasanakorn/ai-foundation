@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"slices"
@@ -117,7 +118,8 @@ const (
 // Admin is the admin API (and optional web UI). It listens on localhost by default;
 // any address works (e.g. "0.0.0.0:8081" for public access). "off" disables it.
 //
-// People sign in with built-in accounts (email + password, stored in the database).
+// People sign in through an OIDC identity provider (spec-0001 section 6.3, D41), or with
+// the one local account from Bootstrap (D42), the only account with a password.
 // MasterKey is optional: a bearer token with the admin role, for scripts and emergency access.
 type Admin struct {
 	Listen       string         `yaml:"listen"`
@@ -126,15 +128,43 @@ type Admin struct {
 	SessionTTL   time.Duration  `yaml:"session_ttl"`   // browser login lifetime; default 12h
 	CookieSecure string         `yaml:"cookie_secure"` // auto (HTTPS or X-Forwarded-Proto: https), always, never
 	Bootstrap    AdminBootstrap `yaml:"bootstrap"`
+	// PasswordLogin false turns off the local account's password too; default true.
+	PasswordLogin *bool `yaml:"password_login"`
+	// PublicURL is the admin URL the IdP redirects back to (never taken from the Host header).
+	PublicURL string    `yaml:"public_url"`
+	OIDC      AdminOIDC `yaml:"oidc"`
 }
 
-// AdminBootstrap creates the first admin account at startup when no account exists yet.
-// Later starts ignore it, so changing the password here has no effect after the first start.
+// AdminBootstrap is the local account (break-glass, D42). It is read on every start: the
+// account is created if missing, and its password follows Password or PasswordHash.
 type AdminBootstrap struct {
-	Email    string `yaml:"email"`
-	Password string `yaml:"password"`
-	Name     string `yaml:"name"`
+	Email        string `yaml:"email"`
+	Password     string `yaml:"password"`      // plain; fine for local development
+	PasswordHash string `yaml:"password_hash"` // argon2id PHC string (aif admin hash-password); for production
+	Name         string `yaml:"name"`
 }
+
+// AdminOIDC is sign-in through outside identity providers (spec-0001 section 6.3).
+type AdminOIDC struct {
+	SessionTTL time.Duration  `yaml:"session_ttl"` // sessions from an OIDC login; default admin.session_ttl
+	Providers  []OIDCProvider `yaml:"providers"`
+}
+
+// OIDCProvider is one identity provider. Name is used in URLs, Title on the button.
+type OIDCProvider struct {
+	Name          string   `yaml:"name"`
+	Title         string   `yaml:"title"`
+	Issuer        string   `yaml:"issuer"`
+	ClientID      string   `yaml:"client_id"`
+	ClientSecret  string   `yaml:"client_secret"`
+	Scopes        []string `yaml:"scopes"`         // default openid, email, profile
+	LinkByEmail   bool     `yaml:"link_by_email"`  // allow the one-time link for every active account
+	AllowedGroups []string `yaml:"allowed_groups"` // empty = no group check
+	GroupsClaim   string   `yaml:"groups_claim"`   // default groups
+}
+
+// PasswordLoginOn reports whether the local account may sign in with its password.
+func (a Admin) PasswordLoginOn() bool { return a.PasswordLogin == nil || *a.PasswordLogin }
 
 // MinPasswordLen is the shortest password accepted for admin accounts.
 const MinPasswordLen = 12
@@ -166,6 +196,7 @@ type NATS struct {
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
 	Usage          NATSUsage     `yaml:"usage"`
 	Control        NATSControl   `yaml:"control"`
+	Audit          NATSAudit     `yaml:"audit"`
 	State          NATSState     `yaml:"state"`
 	Hooks          Hooks         `yaml:"hooks"`
 }
@@ -186,6 +217,11 @@ func (u NATSUsage) UseJetStream() bool { return u.JetStream == nil || *u.JetStre
 
 type NATSControl struct {
 	SubjectPrefix string `yaml:"subject_prefix"` // events go to <prefix>.<event>, e.g. key_revoked
+}
+
+// NATSAudit is where security events go, e.g. <prefix>.breakglass (spec-0001 section 8.1).
+type NATSAudit struct {
+	SubjectPrefix string `yaml:"subject_prefix"` // default aif.audit.v1
 }
 
 type Hooks struct {
@@ -527,6 +563,22 @@ func (c *Config) applyDefaults() {
 	if c.Admin.CookieSecure == "" {
 		c.Admin.CookieSecure = "auto"
 	}
+	if c.Admin.OIDC.SessionTTL == 0 {
+		c.Admin.OIDC.SessionTTL = c.Admin.SessionTTL
+	}
+	c.Admin.PublicURL = strings.TrimRight(c.Admin.PublicURL, "/")
+	for i := range c.Admin.OIDC.Providers {
+		p := &c.Admin.OIDC.Providers[i]
+		if len(p.Scopes) == 0 {
+			p.Scopes = []string{"openid", "email", "profile"}
+		}
+		if p.GroupsClaim == "" {
+			p.GroupsClaim = "groups"
+		}
+		if p.Title == "" {
+			p.Title = p.Name
+		}
+	}
 	if c.Database.MaxConns == 0 {
 		c.Database.MaxConns = 10
 	}
@@ -557,6 +609,9 @@ func (c *Config) applyDefaults() {
 	}
 	if n.Control.SubjectPrefix == "" {
 		n.Control.SubjectPrefix = "aif.control.v1"
+	}
+	if n.Audit.SubjectPrefix == "" {
+		n.Audit.SubjectPrefix = "aif.audit.v1"
 	}
 	if n.State.Bucket == "" {
 		n.State.Bucket = "AIF_ACCOUNT_STATE"
@@ -709,13 +764,23 @@ func (c *Config) validate() error {
 		default:
 			return fmt.Errorf("admin.cookie_secure %q: use auto, always or never", c.Admin.CookieSecure)
 		}
-		if b := c.Admin.Bootstrap; b.Email != "" || b.Password != "" {
+		if b := c.Admin.Bootstrap; b.Email != "" || b.Password != "" || b.PasswordHash != "" {
 			if !strings.Contains(b.Email, "@") {
 				return fmt.Errorf("admin.bootstrap.email %q is not an email address", b.Email)
 			}
-			if len(b.Password) < MinPasswordLen {
-				return fmt.Errorf("admin.bootstrap.password must be at least %d characters", MinPasswordLen)
+			switch {
+			case b.Password != "" && b.PasswordHash != "":
+				return fmt.Errorf("admin.bootstrap: set password or password_hash, not both")
+			case b.PasswordHash != "":
+				if !strings.HasPrefix(b.PasswordHash, "$argon2id$") || strings.Count(b.PasswordHash, "$") != 5 {
+					return fmt.Errorf("admin.bootstrap.password_hash is not an argon2id hash (make one with `aif admin hash-password`)")
+				}
+			case len(b.Password) < MinPasswordLen:
+				return fmt.Errorf("admin.bootstrap.password must be at least %d characters (or set password_hash)", MinPasswordLen)
 			}
+		}
+		if err := c.Admin.validateOIDC(); err != nil {
+			return err
 		}
 	}
 	if err := c.Server.Anthropic.validate(); err != nil {
@@ -741,6 +806,7 @@ func (c *Config) validate() error {
 	for name, subj := range map[string]string{
 		"nats.usage.subject_prefix":      c.NATS.Usage.SubjectPrefix,
 		"nats.control.subject_prefix":    c.NATS.Control.SubjectPrefix,
+		"nats.audit.subject_prefix":      c.NATS.Audit.SubjectPrefix,
 		"nats.hooks.pre_request.subject": c.NATS.Hooks.PreRequest.Subject,
 	} {
 		if subj != "" && !validSubject(subj) {
@@ -846,6 +912,50 @@ func validateModel(m Model, known map[string]string) error {
 		return fmt.Errorf("model %q: round_robin needs at least one target with weight above 0", m.Name)
 	}
 	return nil
+}
+
+var oidcName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// validateOIDC checks admin.public_url and admin.oidc (spec-0001 section 6.3).
+func (a Admin) validateOIDC() error {
+	if a.OIDC.SessionTTL < time.Minute {
+		return fmt.Errorf("admin.oidc.session_ttl must be at least 1m")
+	}
+	if len(a.OIDC.Providers) == 0 {
+		return nil
+	}
+	if err := checkHTTPSURL("admin.public_url", a.PublicURL); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, p := range a.OIDC.Providers {
+		field := "admin.oidc.providers[" + p.Name + "]"
+		switch {
+		case !oidcName.MatchString(p.Name):
+			return fmt.Errorf("admin.oidc.providers: name %q: use a-z, 0-9 and -", p.Name)
+		case seen[p.Name]:
+			return fmt.Errorf("admin.oidc.providers: name %q is used twice", p.Name)
+		case p.ClientID == "":
+			return fmt.Errorf("%s.client_id is required", field)
+		}
+		seen[p.Name] = true
+		if err := checkHTTPSURL(field+".issuer", p.Issuer); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkHTTPSURL accepts an absolute https URL, or http for localhost.
+func checkHTTPSURL(field, raw string) error {
+	u, err := url.Parse(raw)
+	if raw == "" || err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s %q: need an absolute URL such as https://host", field, raw)
+	}
+	if u.Scheme == "https" || (u.Scheme == "http" && IsLoopback(net.JoinHostPort(u.Hostname(), "0"))) {
+		return nil
+	}
+	return fmt.Errorf("%s %q: use https (http only for localhost)", field, raw)
 }
 
 // validateProduction checks the settings of spec-0003: trusted proxies, metrics, dev secrets.

@@ -59,6 +59,7 @@ func (h *Handler) authenticate(next http.HandlerFunc, anyRole bool) http.Handler
 func (h *Handler) identify(r *http.Request) (*Principal, error) {
 	if bearer := httpx.BearerToken(r); bearer != "" {
 		if h.masterKey != "" && subtle.ConstantTimeCompare([]byte(bearer), []byte(h.masterKey)) == 1 {
+			h.auth.MasterKeyUsed(h.clientIP.IP(r), r.Method, r.URL.Path)
 			return &Principal{Role: store.RoleAdmin, Method: "master_key"}, nil
 		}
 		return nil, auth.ErrNoSession // a wrong bearer never falls back to the cookie
@@ -128,6 +129,9 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		httpx.WriteError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_credentials", err.Error())
 		return
+	case errors.Is(err, auth.ErrPasswordLoginOff):
+		httpx.WriteError(w, http.StatusForbidden, "invalid_request_error", "password_login_off", err.Error())
+		return
 	case errors.Is(err, auth.ErrTooManyAttempts):
 		w.Header().Set("Retry-After", "900")
 		httpx.WriteError(w, http.StatusTooManyRequests, "invalid_request_error", "too_many_attempts", err.Error())
@@ -137,7 +141,6 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setCookie(w, r, token, time.Now().Add(h.auth.TTL()))
-	h.log.Info("admin sign-in", "user", u.ID, "email", u.Email, "ip", h.clientIP.IP(r))
 	httpx.WriteJSON(w, http.StatusOK, userView{User: u, Role: u.Role, Method: "session"})
 }
 
@@ -157,31 +160,20 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, userView{User: p.User, Role: p.Role, Method: p.Method})
 }
 
+// changePassword is gone with D42: the local account's password is set in config.
 func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
-	p := principal(r)
-	if p.User == nil {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid_input", "the master key has no password; sign in with an account")
-		return
-	}
-	var in struct {
-		CurrentPassword string `json:"current_password"`
-		NewPassword     string `json:"new_password"`
-	}
-	if !decode(w, r, &in) {
-		return
-	}
-	if err := h.auth.ChangePassword(r.Context(), p.User, in.CurrentPassword, in.NewPassword, p.sessionHash); err != nil {
-		h.fail(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	httpx.WriteError(w, http.StatusForbidden, "invalid_request_error", "password_in_config",
+		"the local account's password is set in config (admin.bootstrap); other accounts sign in through the identity provider")
+}
+
+func (h *Handler) secure(r *http.Request) bool {
+	return h.cookieSecure == "always" ||
+		(h.cookieSecure == "auto" && (r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"))
 }
 
 func (h *Handler) setCookie(w http.ResponseWriter, r *http.Request, value string, expires time.Time) {
-	secure := h.cookieSecure == "always" ||
-		(h.cookieSecure == "auto" && (r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"))
 	c := &http.Cookie{Name: SessionCookie, Value: value, Path: "/", Expires: expires,
-		HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode}
+		HttpOnly: true, Secure: h.secure(r), SameSite: http.SameSiteStrictMode}
 	if value == "" {
 		c.MaxAge = -1
 	}
@@ -191,7 +183,7 @@ func (h *Handler) setCookie(w http.ResponseWriter, r *http.Request, value string
 // ---- accounts ----
 
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.st.ListAdminUsers(r.Context())
+	users, err := h.auth.ListUsers(r.Context())
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -200,7 +192,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
-	u, err := h.st.GetAdminUser(r.Context(), r.PathValue("id"))
+	u, err := h.auth.GetUser(r.Context(), r.PathValue("id"))
 	if err != nil {
 		h.fail(w, err)
 		return
