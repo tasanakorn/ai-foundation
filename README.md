@@ -115,9 +115,19 @@ make build    # web/.output/public + gateway/bin/aif
 
 ## 6. Run in production
 
+There is no prebuilt image or binary. Build from a release tag (see [CHANGELOG.md](CHANGELOG.md)):
+
+```sh
+git checkout v0.1.0
+make build    # web/.output/public + gateway/bin/aif (version from the tag)
+```
+
 1. Copy `gateway/aif.example.yaml` to `aif.yaml` and edit it.
 2. Run PostgreSQL and set `DATABASE_URL`. Migrations run at startup.
 3. Run NATS with JetStream (`nats-server --jetstream`) and set `nats.url`.
 4. Create the first admin: set `AIF_ADMIN_EMAIL` and `AIF_ADMIN_PASSWORD` for the first start, or run `aif admin create-user -config aif.yaml -email you@example.com`.
 5. Set `admin.ui_dir` to the built `web/.output/public` to serve the UI on the admin port.
 6. `aif serve -config aif.yaml`. The admin port listens on `127.0.0.1:8081` by default; set `AIF_ADMIN_LISTEN=0.0.0.0:8081` (or `admin.listen`) for public access, behind TLS (`admin.cookie_secure: auto` marks the cookie Secure on HTTPS). `/healthz` is 503 while NATS or PostgreSQL is down.
+7. Behind a reverse proxy (ingress, CDN, load balancer), set `server.trusted_proxies` (`AIF_TRUSTED_PROXIES`) to the proxy addresses and `server.client_ip_header` if it is not `X-Forwarded-For`. Otherwise every admin sign-in looks like it comes from the proxy, and the per-IP sign-in throttle hits everyone at once. Make the proxy the only way in: a client that reaches the gateway directly can set the header too.
+8. Metrics: set `metrics.listen` (`AIF_METRICS_LISTEN=:9090`) and scrape `GET /metrics` (Prometheus text format). Keep that port off the public ingress. Families: [spec-0003 section 4](docs/specs/spec-0003-production-readiness.md).
+9. The dev secrets from `.env.example` (`dev-master-key-0000`, `dev-admin-password`) are refused at startup unless `dev_mode: true`, which only `gateway/aif.dev.yaml` sets.

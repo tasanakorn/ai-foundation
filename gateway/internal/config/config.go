@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"ai-foundation/gateway/internal/clientip"
 )
 
 type Config struct {
@@ -25,6 +27,22 @@ type Config struct {
 	Providers   []Provider `yaml:"providers"`
 	Models      []Model    `yaml:"models"`
 	Passthrough bool       `yaml:"passthrough"`
+	Metrics     Metrics    `yaml:"metrics"`
+	// DevMode allows the known dev secrets (spec-0003 D23). Only aif.dev.yaml sets it.
+	DevMode bool `yaml:"dev_mode"`
+}
+
+// Metrics is the Prometheus endpoint on its own listener (spec-0003 D22). Default "off".
+type Metrics struct {
+	Listen string `yaml:"listen"`
+}
+
+func (m Metrics) Enabled() bool { return m.Listen != "" && m.Listen != "off" }
+
+// Known dev secrets from .env.example and scripts/dev.py, refused outside dev_mode.
+var devSecrets = map[string]string{
+	"admin.master_key":         "dev-master-key-0000",
+	"admin.bootstrap.password": "dev-admin-password",
 }
 
 type Server struct {
@@ -32,6 +50,10 @@ type Server struct {
 	UpstreamTimeout time.Duration   `yaml:"upstream_timeout"`
 	MaxBodyBytes    int64           `yaml:"max_body_bytes"`
 	Anthropic       AnthropicServer `yaml:"anthropic"`
+	// TrustedProxies are IPs or CIDRs allowed to set ClientIPHeader (spec-0003 D21).
+	// Empty: the client IP is always the TCP peer.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	ClientIPHeader string   `yaml:"client_ip_header"` // default X-Forwarded-For
 }
 
 // AnthropicServer places the Anthropic Messages API (spec-0002 section 3).
@@ -290,6 +312,12 @@ func (c *Config) applyDefaults() {
 	if len(n.Hooks.PreRequest.Formats) == 0 {
 		n.Hooks.PreRequest.Formats = []string{FormatOpenAI}
 	}
+	if c.Server.ClientIPHeader == "" {
+		c.Server.ClientIPHeader = clientip.DefaultHeader
+	}
+	if c.Metrics.Listen == "" {
+		c.Metrics.Listen = "off"
+	}
 	if c.Server.Anthropic.Listen == "" {
 		c.Server.Anthropic.Listen = "off"
 	}
@@ -358,6 +386,9 @@ func (c *Config) validate() error {
 	if err := c.Server.Anthropic.validate(); err != nil {
 		return err
 	}
+	if err := c.validateProduction(); err != nil {
+		return err
+	}
 	if err := validFormats("nats.hooks.pre_request.formats", c.NATS.Hooks.PreRequest.Formats); err != nil {
 		return err
 	}
@@ -408,6 +439,44 @@ func (c *Config) validate() error {
 		models[m.Name] = true
 	}
 	return nil
+}
+
+// validateProduction checks the settings of spec-0003: trusted proxies, metrics, dev secrets.
+func (c *Config) validateProduction() error {
+	for _, tp := range c.Server.TrustedProxies {
+		if _, err := clientip.ParsePrefix(tp); err != nil {
+			return fmt.Errorf("server.trusted_proxies: %w", err)
+		}
+	}
+	if !validHeaderName(c.Server.ClientIPHeader) {
+		return fmt.Errorf("server.client_ip_header %q is not a valid header name", c.Server.ClientIPHeader)
+	}
+	if c.Metrics.Enabled() {
+		if _, _, err := net.SplitHostPort(c.Metrics.Listen); err != nil {
+			return fmt.Errorf("metrics.listen: %w", err)
+		}
+	}
+	if !c.DevMode {
+		values := map[string]string{"admin.master_key": c.Admin.MasterKey, "admin.bootstrap.password": c.Admin.Bootstrap.Password}
+		for _, field := range []string{"admin.master_key", "admin.bootstrap.password"} {
+			if values[field] == devSecrets[field] {
+				return fmt.Errorf("%s is the public dev default; set a secret value (or dev_mode: true, for local development only)", field)
+			}
+		}
+	}
+	return nil
+}
+
+func validHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r == '-' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 func (p Provider) validateAnthropic() error {

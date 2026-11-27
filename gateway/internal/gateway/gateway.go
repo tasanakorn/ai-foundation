@@ -21,6 +21,7 @@ import (
 	"ai-foundation/gateway/internal/id"
 	"ai-foundation/gateway/internal/keys"
 	"ai-foundation/gateway/internal/metering"
+	"ai-foundation/gateway/internal/metrics"
 	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store"
 )
@@ -47,6 +48,7 @@ type Handler struct {
 	maxBody int64
 	timeout time.Duration
 	anthPfx string
+	metrics *metrics.Gateway // nil = off
 }
 
 type Options struct {
@@ -58,12 +60,13 @@ type Options struct {
 	Log             *slog.Logger
 	MaxBodyBytes    int64
 	UpstreamTimeout time.Duration
-	AnthropicPrefix string // path prefix of the Anthropic API on the main listener; "" = off
+	AnthropicPrefix string           // path prefix of the Anthropic API on the main listener; "" = off
+	Metrics         *metrics.Gateway // optional
 }
 
 func New(o Options) *Handler {
 	return &Handler{router: o.Router, keys: o.Keys, rec: o.Recorder, hook: o.Hook, ready: o.Ready, log: o.Log,
-		maxBody: o.MaxBodyBytes, timeout: o.UpstreamTimeout, anthPfx: o.AnthropicPrefix}
+		maxBody: o.MaxBodyBytes, timeout: o.UpstreamTimeout, anthPfx: o.AnthropicPrefix, metrics: o.Metrics}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -282,8 +285,10 @@ func (h *Handler) runHook(ctx context.Context, k *store.Key, rec *store.UsageRec
 		Body: body, Format: format,
 	})
 	if err != nil {
+		h.metrics.HookDecision(format, "unavailable")
 		return nil, &apiError{http.StatusServiceUnavailable, "server_error", "hook_unavailable", "request policy check is unavailable, try again later"}
 	}
+	h.metrics.HookDecision(format, string(d.Action))
 	switch d.Action {
 	case hook.Deny:
 		return nil, &apiError{d.Status, "invalid_request_error", d.Code, d.Message}

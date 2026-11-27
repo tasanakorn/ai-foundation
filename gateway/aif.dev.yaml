@@ -1,5 +1,12 @@
 # Dev config used by scripts/dev.py. Local only. Do not use in production.
 
+# Allows the public dev secrets below (spec-0003 D23). Never set this in production.
+dev_mode: true
+
+# Prometheus metrics: curl 127.0.0.1:9090/metrics
+metrics:
+  listen: ${AIF_METRICS_LISTEN:-127.0.0.1:9090}
+
 server:
   listen: ${AIF_LISTEN:-127.0.0.1:8080}
 

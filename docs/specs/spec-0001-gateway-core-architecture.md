@@ -174,7 +174,7 @@ Packages live under `gateway/internal/`.
    2. Only the SHA-256 of the token is stored, so a database leak does not leak sessions. Sessions live in Postgres, so they work on every node.
    3. Lifetime `admin.session_ttl` (default 12h). Expired rows are deleted on each new sign-in.
 4. **CSRF.** Writes with a session cookie must have `Origin` equal to the request host (or `Sec-Fetch-Site: same-origin` when there is no `Origin`). Login and logout are checked too.
-5. **Brute force.** Per node: 10 failed sign-ins per email and 100 per client IP in 15 min, then `429`. Unknown emails take the same time as wrong passwords. The client IP is the TCP peer (`X-Forwarded-For` is not trusted).
+5. **Brute force.** Per node: 10 failed sign-ins per email and 100 per client IP in 15 min, then `429`. Unknown emails take the same time as wrong passwords. The client IP is the TCP peer, or the client IP header when the peer is in `server.trusted_proxies` ([spec-0003](spec-0003-production-readiness.md) D21).
 6. **Master key** (optional). `admin.master_key` as a bearer token acts with the `admin` role, for scripts and emergency access. A wrong bearer token never falls back to the cookie. Empty = off.
 7. **Outside logins later.** An OIDC or SSO flow only has to map a verified identity to an `AdminUser` and call `auth.Service.IssueSession`. No schema change is needed for that; a link table (`admin_identities`) can be added when the first provider lands.
 

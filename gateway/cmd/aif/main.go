@@ -92,6 +92,10 @@ func run(cfgPath string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	app.Version = version
+	if cfg.DevMode {
+		log.Warn("dev_mode is on: the public dev secrets are allowed. Never use dev_mode in production")
+	}
 	a, err := app.New(ctx, cfg, st, nb, log)
 	if err != nil {
 		nb.Close(context.Background())
@@ -101,6 +105,15 @@ func run(cfgPath string, log *slog.Logger) error {
 	servers := []*http.Server{{Addr: cfg.Server.Listen, Handler: a.Public, ReadHeaderTimeout: 10 * time.Second}}
 	if an := cfg.Server.Anthropic; an.ListenEnabled() {
 		servers = append(servers, &http.Server{Addr: an.Listen, Handler: a.Anthropic, ReadHeaderTimeout: 10 * time.Second})
+	}
+	if cfg.Metrics.Enabled() {
+		if !config.IsLoopback(cfg.Metrics.Listen) {
+			log.Info("metrics endpoint is reachable from the network; do not route it through a public ingress", "addr", cfg.Metrics.Listen)
+		}
+		servers = append(servers, &http.Server{Addr: cfg.Metrics.Listen, Handler: a.Metrics.Handler(), ReadHeaderTimeout: 10 * time.Second})
+	}
+	if len(cfg.Server.TrustedProxies) > 0 {
+		log.Info("client IP from trusted proxies", "header", cfg.Server.ClientIPHeader, "trusted_proxies", cfg.Server.TrustedProxies)
 	}
 	if a.Admin != nil {
 		if !config.IsLoopback(cfg.Admin.Listen) {

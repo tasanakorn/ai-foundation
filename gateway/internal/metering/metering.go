@@ -139,6 +139,13 @@ func (s StoreSink) Write(ctx context.Context, recs []store.UsageRecord) error {
 	return s.Store.InsertUsage(ctx, recs)
 }
 
+// Observer sees every record as it is recorded, and every failed sink write (metrics).
+// Calls must be fast and must not block.
+type Observer interface {
+	Usage(rec store.UsageRecord)
+	SinkError(sink string)
+}
+
 // Recorder buffers records in memory and flushes them to every sink in batches.
 // Record never blocks the request; when the buffer is full the record is dropped and counted.
 type Recorder struct {
@@ -147,14 +154,17 @@ type Recorder struct {
 	batch    int
 	interval time.Duration
 	log      *slog.Logger
+	obs      Observer // optional
 	done     chan struct{}
 	dropped  atomic.Int64
 	mu       sync.RWMutex
 	closed   bool
 }
 
-func NewRecorder(cfg config.Metering, log *slog.Logger, sinks ...Sink) *Recorder {
+// NewRecorder starts the flush loop. obs may be nil.
+func NewRecorder(cfg config.Metering, log *slog.Logger, obs Observer, sinks ...Sink) *Recorder {
 	r := &Recorder{
+		obs:      obs,
 		ch:       make(chan store.UsageRecord, cfg.BufferSize),
 		sinks:    sinks,
 		batch:    cfg.BatchSize,
@@ -167,6 +177,9 @@ func NewRecorder(cfg config.Metering, log *slog.Logger, sinks ...Sink) *Recorder
 }
 
 func (r *Recorder) Record(rec store.UsageRecord) {
+	if r.obs != nil {
+		r.obs.Usage(rec)
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.closed {
@@ -213,6 +226,9 @@ func (r *Recorder) run() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if err := s.Write(ctx, buf); err != nil {
 				r.log.Error("usage sink write failed", "sink", s.Name(), "records", len(buf), "err", err)
+				if r.obs != nil {
+					r.obs.SinkError(s.Name())
+				}
 			}
 			cancel()
 		}

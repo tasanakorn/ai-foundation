@@ -13,15 +13,20 @@ import (
 	"ai-foundation/gateway/internal/admin"
 	"ai-foundation/gateway/internal/auth"
 	"ai-foundation/gateway/internal/bus"
+	"ai-foundation/gateway/internal/clientip"
 	"ai-foundation/gateway/internal/config"
 	"ai-foundation/gateway/internal/gateway"
 	"ai-foundation/gateway/internal/hook"
 	"ai-foundation/gateway/internal/keys"
 	"ai-foundation/gateway/internal/metering"
+	"ai-foundation/gateway/internal/metrics"
 	"ai-foundation/gateway/internal/provider"
 	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store"
 )
+
+// Version is the build version shown in metrics; cmd/aif sets it.
+var Version = "dev"
 
 type App struct {
 	Router   *router.Router
@@ -29,6 +34,7 @@ type App struct {
 	Auth     *auth.Service
 	Recorder *metering.Recorder
 	Bus      *bus.Bus
+	Metrics  *metrics.Gateway // served on metrics.listen when that is on
 
 	Public    http.Handler // OpenAI API (/v1, /openai/v1) and Anthropic API (/anthropic)
 	Anthropic http.Handler // Anthropic API at the root, for server.anthropic.listen
@@ -56,7 +62,19 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		}
 	})
 
-	a.Recorder = metering.NewRecorder(cfg.Metering, log, metering.StoreSink{Store: st}, nb.UsageSink())
+	dbCheck := func() error {
+		if p, ok := st.(interface{ Ping(context.Context) error }); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if p.Ping(ctx) != nil {
+				return errors.New("database unreachable") // public endpoint: no connection details
+			}
+		}
+		return nil
+	}
+	a.Metrics = metrics.New(Version, metrics.Checks{NATS: nb.Status, Database: dbCheck,
+		Dropped: func() int64 { return a.Recorder.Dropped() }})
+	a.Recorder = metering.NewRecorder(cfg.Metering, log, a.Metrics, metering.StoreSink{Store: st}, nb.UsageSink())
 
 	var preHook hook.Hook
 	if h := cfg.NATS.Hooks.PreRequest; h.Enabled() {
@@ -68,27 +86,25 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		if err := nb.Status(); err != nil {
 			return err
 		}
-		if p, ok := st.(interface{ Ping(context.Context) error }); ok {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			if p.Ping(ctx) != nil {
-				return errors.New("database unreachable") // public endpoint: no connection details
-			}
-		}
-		return nil
+		return dbCheck()
 	}
 	gw := gateway.New(gateway.Options{
 		Router: a.Router, Keys: a.Keys, Recorder: a.Recorder, Hook: preHook, Ready: ready, Log: log,
 		MaxBodyBytes: cfg.Server.MaxBodyBytes, UpstreamTimeout: cfg.Server.UpstreamTimeout,
-		AnthropicPrefix: cfg.Server.Anthropic.Prefix(),
+		AnthropicPrefix: cfg.Server.Anthropic.Prefix(), Metrics: a.Metrics,
 	})
-	a.Public, a.Anthropic = gw.Routes(), gw.AnthropicRoutes()
+	a.Public, a.Anthropic = a.Metrics.Wrap("public", gw.Routes()), a.Metrics.Wrap("anthropic", gw.AnthropicRoutes())
 	if cfg.Admin.Enabled() {
 		if err := a.bootstrapAdmin(ctx, cfg.Admin, log); err != nil {
 			return nil, err
 		}
+		ips, err := clientip.New(cfg.Server.TrustedProxies, cfg.Server.ClientIPHeader)
+		if err != nil {
+			return nil, err
+		}
 		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Router, Public: a.Public,
-			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir, Log: log}).Routes()
+			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir,
+			ClientIP: ips, Log: log}).Routes()
 	}
 	return a, nil
 }

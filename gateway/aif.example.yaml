@@ -10,6 +10,16 @@ server:
   anthropic:
     path_prefix: ${AIF_ANTHROPIC_PREFIX:-/anthropic}   # "" = not on the main listener
     listen: ${AIF_ANTHROPIC_LISTEN:-off}               # optional own port, API at its root, e.g. :8082
+  # Behind a reverse proxy (ingress, CDN, load balancer), list the proxies that may set the
+  # client IP header. Empty = the client IP is the TCP peer. Used by the admin sign-in throttle
+  # and logs (docs/specs/spec-0003 section 3). Comma list in the env, e.g. "10.0.0.0/8,192.168.0.0/16".
+  trusted_proxies: [${AIF_TRUSTED_PROXIES:-}]
+  client_ip_header: ${AIF_CLIENT_IP_HEADER:-X-Forwarded-For}   # or X-Real-IP, CF-Connecting-IP, ...
+
+# Prometheus metrics at GET /metrics on their own listener (spec-0003 section 4).
+# Keep it off the public ingress. "off" disables it.
+metrics:
+  listen: ${AIF_METRICS_LISTEN:-off}   # e.g. :9090
 
 admin:
   # Admin API (+ web UI). Default: localhost only. Public: AIF_ADMIN_LISTEN=0.0.0.0:8081 (or ":8081").

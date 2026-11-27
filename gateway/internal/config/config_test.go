@@ -148,6 +148,12 @@ func TestValidate(t *testing.T) {
 		"unknown model format":       db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x}]\nmodels: [{name: m, provider: o, formats: [gemini]}]",
 		"anthropic format on openai": db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x}]\nmodels: [{name: m, provider: o, formats: [anthropic]}]",
 		"unknown hook format":        db + "admin: {listen: \"off\"}\nnats: {hooks: {pre_request: {formats: [grpc]}}}",
+		"bad trusted proxy":          db + "server: {trusted_proxies: [10.0.0.0/33]}",
+		"trusted proxy hostname":     db + "server: {trusted_proxies: [ingress.local]}",
+		"bad client ip header":       db + "server: {client_ip_header: \"X Forwarded\"}",
+		"metrics listen":             db + "metrics: {listen: nope}",
+		"dev master key":             db + "admin: {master_key: dev-master-key-0000}",
+		"dev bootstrap password":     db + "admin: {bootstrap: {email: a@b.c, password: dev-admin-password}}",
 	}
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {
@@ -166,5 +172,34 @@ func TestIsLoopback(t *testing.T) {
 		if got := IsLoopback(addr); got != want {
 			t.Errorf("IsLoopback(%q) = %v, want %v", addr, got, want)
 		}
+	}
+}
+
+func TestProductionSettings(t *testing.T) {
+	cfg, err := Parse([]byte(`database: {url: "postgres://x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ClientIPHeader != "X-Forwarded-For" || len(cfg.Server.TrustedProxies) != 0 || cfg.Metrics.Enabled() || cfg.DevMode {
+		t.Fatalf("defaults: %+v %+v %v", cfg.Server, cfg.Metrics, cfg.DevMode)
+	}
+	cfg, err = Parse([]byte(`
+database: {url: "postgres://x"}
+server: {trusted_proxies: [10.0.0.0/8, 192.0.2.7], client_ip_header: CF-Connecting-IP}
+metrics: {listen: ":9090"}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ClientIPHeader != "CF-Connecting-IP" || len(cfg.Server.TrustedProxies) != 2 || !cfg.Metrics.Enabled() {
+		t.Fatalf("parsed: %+v %+v", cfg.Server, cfg.Metrics)
+	}
+	// dev_mode allows the known dev secrets.
+	if _, err := Parse([]byte(`
+dev_mode: true
+database: {url: "postgres://x"}
+admin: {master_key: dev-master-key-0000, bootstrap: {email: a@b.c, password: dev-admin-password}}
+`)); err != nil {
+		t.Fatalf("dev_mode: %v", err)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ai-foundation/gateway/internal/auth"
+	"ai-foundation/gateway/internal/clientip"
 	"ai-foundation/gateway/internal/httpx"
 	"ai-foundation/gateway/internal/keys"
 	"ai-foundation/gateway/internal/router"
@@ -33,6 +34,7 @@ type Handler struct {
 	masterKey    string
 	cookieSecure string
 	uiDir        string
+	clientIP     *clientip.Resolver
 	log          *slog.Logger
 }
 
@@ -43,14 +45,15 @@ type Options struct {
 	Router       *router.Router
 	Public       http.Handler // the /v1 handler, for the playground
 	MasterKey    string       // optional; "" turns bearer master-key access off
-	CookieSecure string // auto, always, never
+	CookieSecure string       // auto, always, never
 	UIDir        string
+	ClientIP     *clientip.Resolver // client IP behind trusted proxies; nil = TCP peer
 	Log          *slog.Logger
 }
 
 func New(o Options) *Handler {
 	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, router: o.Router, public: o.Public, masterKey: o.MasterKey,
-		cookieSecure: o.CookieSecure, uiDir: o.UIDir, log: o.Log}
+		cookieSecure: o.CookieSecure, uiDir: o.UIDir, clientIP: o.ClientIP, log: o.Log}
 }
 
 func (h *Handler) Routes() http.Handler {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"net"
 	"net/http"
 	"net/url"
 	"time"
@@ -124,7 +123,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	token, u, err := h.auth.Login(r.Context(), in.Email, in.Password, r.UserAgent(), clientIP(r))
+	token, u, err := h.auth.Login(r.Context(), in.Email, in.Password, r.UserAgent(), h.clientIP.IP(r))
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		httpx.WriteError(w, http.StatusUnauthorized, "invalid_request_error", "invalid_credentials", err.Error())
@@ -138,7 +137,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.setCookie(w, r, token, time.Now().Add(h.auth.TTL()))
-	h.log.Info("admin sign-in", "user", u.ID, "email", u.Email, "ip", clientIP(r))
+	h.log.Info("admin sign-in", "user", u.ID, "email", u.Email, "ip", h.clientIP.IP(r))
 	httpx.WriteJSON(w, http.StatusOK, userView{User: u, Role: u.Role, Method: "session"})
 }
 
@@ -187,15 +186,6 @@ func (h *Handler) setCookie(w http.ResponseWriter, r *http.Request, value string
 		c.MaxAge = -1
 	}
 	http.SetCookie(w, c)
-}
-
-// clientIP is the TCP peer. X-Forwarded-For is not trusted (anyone can set it).
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // ---- accounts ----
