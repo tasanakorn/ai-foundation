@@ -1,78 +1,80 @@
-# change-0013: OIDC admin login
+# change-0013: OIDC admin login, one local account
 
 - Status: draft
 - Date: 2026-11-27
-- Related: [task-0025](../tasks/task-0025-oidc-admin-login.md); [spec-0001](../specs/spec-0001-gateway-core-architecture.md) sections 4.2, 6, 6.3 and D41; [product](../products/ai-foundation.md) goal 5
+- Related: [task-0025](../tasks/task-0025-oidc-admin-login.md); [spec-0001](../specs/spec-0001-gateway-core-architecture.md) sections 4.2, 6, 6.1, 6.3, 8.1, D41 and D42; [product](../products/ai-foundation.md) goal 5
 
 ## 1. What changes
 
-1. The admin UI and admin API accept sign-in through an outside identity provider (IdP) that speaks OIDC (OpenID Connect, the standard "login with ..." protocol). Examples: Rauthy, Pocket ID, Authentik, Keycloak, Google.
-2. The gateway is only an OIDC client. 2FA, passkeys and Google login are features of the IdP. The gateway builds none of them.
-3. The built-in password login stays. It is not removed:
-   1. It is on by default, so a fresh install still works with no IdP.
-   2. A new setting turns it off once OIDC works (`admin.password_login: false`). Then the sign-in page shows only the IdP buttons, and `POST /admin/v1/auth/login` returns `403`.
-   3. The master key (`admin.master_key`) keeps working in both modes, as the break-glass path.
-4. One or more IdPs can be set, each with a name shown on the sign-in page.
-5. No sign-up through the IdP. An outside login works only for an admin account that already exists in the gateway, and only after it is linked to that account:
-   1. A link ties the account to the IdP's user id (`issuer` + `sub`). Every login matches by that link, never by email alone, so an email change at the IdP does not lock the user out or move access to someone else.
+1. **OIDC login.** The admin UI and admin API accept sign-in through an outside identity provider (IdP) that speaks OIDC (OpenID Connect, the standard "login with ..." protocol). Examples: Rauthy, Pocket ID, Authentik, Keycloak, Google.
+   1. The gateway is only an OIDC client. 2FA, passkeys and Google login are features of the IdP. The gateway builds none of them.
+   2. One or more IdPs can be set, each with a button on the sign-in page.
+2. **One local account (break-glass).** Password sign-in works for one account only: the one in config or env (`admin.bootstrap.email`, `AIF_ADMIN_EMAIL`). It is the emergency way in when the IdP is down. Every other account signs in only through OIDC.
+   1. The account is created at startup if missing, and is always role `admin`.
+   2. Its password comes from config on every start: plain `admin.bootstrap.password` (`AIF_ADMIN_PASSWORD`, fine for local dev) or an argon2id hash `admin.bootstrap.password_hash` (`AIF_ADMIN_PASSWORD_HASH`, for production, so the secret store holds no plain password). A new command `aif admin hash-password` makes the hash. When the stored hash does not match config, the gateway updates it and ends the account's sessions.
+   3. The API and UI cannot change its role, disable it, delete it or set its password. It cannot be linked to an IdP, so it stays separate from the IdP.
+   4. Other accounts cannot have a password. The API refuses `password` for them. Existing hashes of other accounts are ignored (not deleted, so a roll back still works), and the gateway logs how many at startup.
+   5. Every use is loud: a password sign-in or a master-key call writes a warning log and a NATS event `aif.audit.v1.breakglass`. The UI shows a banner while signed in with this account.
+   6. `admin.password_login: false` turns off even this password. Then only OIDC and the master key are left.
+   7. Without `admin.bootstrap.email`, there is no local account: only OIDC and the master key.
+3. **Master key.** `admin.master_key` stays as it is, optional. The docs advise leaving it empty in production unless scripts need it.
+4. **No sign-up through the IdP.** An OIDC login works only for an existing, active account that is linked to it:
+   1. A link ties the account to the IdP's user id (`issuer` + `sub`). Logins match by the link, never by email alone, so an email change at the IdP does not lock the user out or move access to someone else.
    2. Ways to link:
-      1. A signed-in user starts "Link login" for an IdP on their own account page.
-      2. An admin allows a one-time link for a user (it expires after 24h). The next OIDC login with that user's email, verified by the IdP, links the account and ends the allowance. This is how a user without a password gets their first login.
-      3. An admin can remove any link; a user can remove their own.
-   3. A user may have no password (`password` is optional on create). Such a user signs in only through OIDC.
-   4. Optional, per IdP: `link_by_email: true` lets the first login link itself when the IdP's email matches an active `admin_users` row and the IdP says the email is verified. It is off by default, because some IdPs allow open sign-up or set `email_verified` loosely. Turn it on only for an IdP whose users you control.
-   5. The role stays in the gateway (`admin` or `viewer`). Roles from the IdP are not read in this change.
-6. After a good OIDC login, the gateway issues its normal session (`auth.Service.IssueSession`). Sessions, CSRF checks, roles and sign-out work as today.
-7. The login flow:
-   1. Start: the gateway makes a random state, nonce and PKCE verifier, stores them in Postgres (table `admin_oidc_flows`, 10 minute life, only the hash of the flow id), and sets a flow cookie `aif_oidc` holding the random flow id.
+      1. An admin allows a one-time link for an account (valid 24h). The next OIDC login with that account's email, verified by the IdP, links it and ends the allowance. This is how a new account gets its first login.
+      2. A signed-in user links another IdP on their own account page.
+      3. Optional, per IdP: `link_by_email: true` allows the one-time link for every active account, without the admin step. Off by default, because some IdPs allow open sign-up or set `email_verified` loosely.
+   3. An admin can remove any link; a user can remove their own.
+   4. The role stays in the gateway (`admin` or `viewer`). Roles from the IdP are not read.
+5. **Login flow.**
+   1. Start: the gateway makes a random flow id, state, nonce and PKCE verifier, stores them in Postgres (table `admin_oidc_flows`, 10 minute life, only the hash of the flow id) and sets a flow cookie `aif_oidc` with the flow id.
    2. The flow cookie is `HttpOnly`, `Secure` as the session cookie, `SameSite=Lax` and `Path=/admin/v1/auth/oidc`. Lax is needed: the IdP sends the browser back from another site, and a `Strict` cookie is not sent on that redirect.
-   3. Callback: the gateway checks the flow cookie, state, nonce and the ID token (issuer, audience, expiry, signature), deletes the flow row (one use), and issues the session.
-   4. The callback then answers with a small same-origin page that moves the browser to the admin UI, so the next request sends the `SameSite=Strict` session cookie.
-   5. The flow state is in Postgres, so start and callback may land on different nodes, and no new shared secret is needed.
-8. Session life: optional `admin.oidc.session_ttl` (for example `1h`) for sessions from an OIDC login, so users go back to the IdP more often. Default: `admin.session_ttl`. Known limit: a user disabled at the IdP keeps a gateway session until it expires. Back-channel logout (the IdP ending the session) is not in this change.
+   3. Callback: the gateway checks the flow cookie and state, exchanges the code, verifies the ID token (issuer, audience, expiry, signature, nonce), uses the flow row once, and issues the normal session (`auth.Service.IssueSession`).
+   4. The email and `email_verified` come from the ID token, or from the IdP's userinfo endpoint when the token lacks them.
+   5. The callback answers with a small same-origin page that moves the browser to the UI, so the next request sends the `SameSite=Strict` session cookie.
+   6. If the IdP cannot be reached at startup, the gateway tries its discovery again on the next login attempt (at most every 30 seconds), so no restart is needed.
+6. **Sessions.** Optional `admin.oidc.session_ttl` (for example `1h`) for sessions from an OIDC login. Default: `admin.session_ttl`. Known limit: an account disabled at the IdP keeps its gateway session until it expires. Sessions, CSRF checks, roles and sign-out work as today.
 
 ## 2. Why
 
-1. The owner wants 2FA, Google login and passkeys for admins (2026-11-27), and wants to keep the core small.
+1. The owner wants 2FA, Google login and passkeys for admins, and wants to keep the core small (2026-11-27).
 2. Building TOTP, WebAuthn and recovery codes ourselves is large security code to own. Any good IdP already has them.
-3. Generic OIDC, not one product: no IdP becomes a required service, so the "light" goal (one binary, Postgres and NATS) holds. The operator picks the IdP.
+3. Generic OIDC, not one product: no IdP becomes a required service, so the "light" goal holds. The operator picks the IdP.
 4. Not a forward-auth proxy (tinyauth, oauth2-proxy): the gateway would have to trust a user header, which can be faked when the admin port is reachable without the proxy.
-5. Spec-0001 D16 already planned this seam.
+5. One local account: the owner does not want extra local accounts by accident (2026-11-27). One break-glass account plus SSO for everyone is common practice (Argo CD has the same model), and local accounts without 2FA are the weak spot it removes.
+6. Spec-0001 D16 already planned the OIDC seam.
 
 ## 3. Impact
 
-1. Product document: goal 5 changes ("Outside logins can be added later" -> OIDC login, password login optional).
-2. Spec: spec-0001 new section 6.3 and decision D41: config shape, flow, account linking, the `password_login` switch.
-3. Admin API (additive):
-   1. `GET /admin/v1/auth/methods` (no auth): which sign-in methods are on, for the sign-in page.
-   2. `GET /admin/v1/auth/oidc/{name}/start` and `GET /admin/v1/auth/oidc/{name}/callback`: the redirect flow, with state, nonce and PKCE. `start?link=1` links the IdP login to the signed-in user instead of signing in.
-   3. Own links, any role: `GET /admin/v1/auth/identities` and `DELETE /admin/v1/auth/identities/{id}`.
-   4. Admin: `GET /admin/v1/users/{id}/identities`, `DELETE /admin/v1/users/{id}/identities/{identity_id}`, and `POST /admin/v1/users/{id}/identities/allow` (the one-time link, 24h).
-   5. `POST /admin/v1/users`: `password` becomes optional.
-   6. The login response field `method` gains the value `oidc`.
-   7. Mirrored in `web/app/types/admin.ts`.
-4. Data: one migration adds a column and two tables:
-   1. `admin_users.link_allowed_until` (null = no one-time link allowed).
-   2. `admin_identities (id, user_id, issuer, subject, email, created_at, last_login_at)`, unique on `(issuer, subject)`. Rows go when the user is deleted.
-   3. `admin_oidc_flows (id_hash, provider, state, nonce, pkce_verifier, link_user_id, expires_at)`. Expired rows are deleted on each new flow.
-5. Config, all optional:
-   1. `admin.password_login` (default `true`).
-   2. `admin.oidc.providers[]`: `name`, `title`, `issuer`, `client_id`, `client_secret`, `scopes`, `link_by_email` (default `false`).
-   3. `admin.oidc.session_ttl` (default: `admin.session_ttl`).
-   4. `admin.public_url`: the admin URL the IdP redirects back to. It is never built from the request `Host` header.
-   5. Secrets come from env, and new settings go in `.env.example`.
-6. Several nodes: the flow state is kept in a short-lived signed cookie, not in node memory, so the start and the callback may land on different nodes.
-7. New Go dependencies (pinned): `github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2`.
-8. Web UI: the sign-in page shows one button per IdP, and hides the password form when it is off. The account page has "Link login" per IdP. The Users page shows each user's linked logins, with a way to remove a link.
-9. No NATS subject or payload changes.
-10. Without `admin.oidc` set, nothing changes for current installs.
+1. **Breaking** (on `0.x`, so the next minor version):
+   1. Accounts other than the bootstrap account can no longer sign in with a password. They need an IdP and a link first.
+   2. `POST /admin/v1/users` and `PATCH /admin/v1/users/{id}` refuse `password` (`400`). `POST /admin/v1/auth/password` returns `403`: the password is set in config.
+   3. `aif admin create-user` makes accounts without a password. `aif admin reset-password` is removed; it prints that the password is set in config.
+   4. An install without an IdP has one admin and no viewer accounts.
+2. Product document: goal 5.
+3. Spec-0001: sections 4.2, 6, 6.1, new 6.3, 8.1; decisions D41 (OIDC) and D42 (one local account).
+4. Admin API (added):
+   1. `GET /admin/v1/auth/methods` (no auth): the sign-in methods that are on.
+   2. `GET /admin/v1/auth/oidc/{name}/start` and `/callback`: the redirect flow. `start?link=1` links the IdP to the signed-in user.
+   3. Own links, any role: `GET /admin/v1/auth/identities`, `DELETE /admin/v1/auth/identities/{id}`.
+   4. Admin: `GET /admin/v1/users/{id}/identities`, `DELETE /admin/v1/users/{id}/identities/{identity_id}`, `POST /admin/v1/users/{id}/identities/allow`.
+   5. `method` in auth responses gains `oidc`; user objects gain `local` (true for the break-glass account).
+   6. Mirrored in `web/app/types/admin.ts`.
+5. Data: one migration adds the column `admin_users.link_allowed_until`, and the tables `admin_identities` (unique on `issuer, subject`; rows go with the user) and `admin_oidc_flows`.
+6. Config:
+   1. New: `admin.bootstrap.password_hash`, `admin.password_login` (default `true`), `admin.public_url`, `admin.oidc.session_ttl`, `admin.oidc.providers[]` (`name`, `title`, `issuer`, `client_id`, `client_secret`, `scopes`, `link_by_email`).
+   2. Changed: `admin.bootstrap.*` is read on every start, not only on the first.
+   3. Env: `AIF_ADMIN_PASSWORD_HASH` and one client secret per IdP go in `.env.example`.
+7. NATS (additive): new subject `aif.audit.v1.breakglass`, core pub/sub, payload `{type, method, user_id, email, ip, node, at}`. For the master key, at most one event per node per minute.
+8. Several nodes: the flow state is in Postgres, so start and callback may land on different nodes, and no shared secret is needed.
+9. New Go dependencies (pinned): `github.com/coreos/go-oidc/v3`, `golang.org/x/oauth2`.
+10. Web UI: IdP buttons on the sign-in page (password form hidden when off); the break-glass banner; "Link login" on the account page; links and "Allow link" on the Users page; no password fields for other accounts.
 
-## 4. Decided in the spec, and left out
+## 4. Left out
 
-1. Per user, without a password: a user with no password signs in only through OIDC (section 1 item 5.3). The global `password_login` switch stays for "no passwords at all".
-2. Left out: roles from IdP groups (for example `aif-admins` -> `admin`), back-channel logout, and auto sign-up. Each can be a later change.
+1. Roles from IdP groups (for example `aif-admins` -> `admin`), back-channel logout, and sign-up through the IdP. Each can be a later change.
 
 ## 5. Roll back
 
-1. Set `admin.password_login: true` (or remove it) so password login works again, then deploy the older binary.
-2. The `admin_identities` and `admin_oidc_flows` tables can stay; the older binary ignores them. A down migration drops them.
+1. Deploy the older binary. Old password hashes of other accounts are still stored, so their password sign-in works again.
+2. The new tables and column can stay; the older binary ignores them. A down migration drops them.

@@ -20,8 +20,8 @@ A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI ag
 3. **Metering.** Count tokens and cost for every request, including streams.
    1. **Credit per provider account.** Each account has one credit type: a monthly plan credit, a pay-as-you-go budget, or a prepaid balance. The admin sees how much is used or left, with a warning at 80 percent. Prepaid top-ups are recorded in the database ([change-0008](../changes/change-0008-credit-per-account.md)).
 4. **API keys.** Simple keys that are easy to map to tenants, apps, and end users.
-5. **Built-in admin.** Own admin accounts (email + password, roles), so the gateway works without any outside identity system. Admin API on localhost by default, switchable to public. Web UI in Vue/Nuxt.
-   1. **Outside login (OIDC).** Admins can also sign in through any OIDC identity provider (for example Rauthy, Authentik, Keycloak or Google), which gives 2FA, passkeys and Google login without the gateway building them. Only existing admin accounts can sign in this way; roles stay in the gateway. Password login can be turned off once OIDC works ([change-0013](../changes/change-0013-oidc-admin-login.md)).
+5. **Built-in admin.** One local admin account (email + password, set in config), so the gateway works without any outside identity system and stays reachable when it is down. Admin API on localhost by default, switchable to public. Web UI in Vue/Nuxt.
+   1. **Outside login (OIDC).** Admins can also sign in through any OIDC identity provider (for example Rauthy, Authentik, Keycloak or Google), which gives 2FA, passkeys and Google login without the gateway building them. All other admin accounts sign in this way, and only after an admin adds them; roles stay in the gateway. The local account's password can be turned off once OIDC works ([change-0013](../changes/change-0013-oidc-admin-login.md)).
 6. **Extensible from outside.** New features live in separate services (any language) and talk to the core over NATS (events, hooks) or HTTP.
 7. **No big rewrites.** Start small, but put the seams (interfaces, contracts, schema) in place now.
 

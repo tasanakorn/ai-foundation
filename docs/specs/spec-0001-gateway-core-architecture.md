@@ -8,7 +8,7 @@
 
 1. One Go binary, `aif`, with two HTTP listeners:
    1. **Public API** (`:8080`) — OpenAI-compatible `/v1/*`. Auth by gateway API key.
-   2. **Admin API** (`127.0.0.1:8081` by default) — `/admin/v1/*`. Auth by built-in admin accounts or an OIDC login (session cookie), or the optional master key. Can also serve the web UI.
+   2. **Admin API** (`127.0.0.1:8081` by default) — `/admin/v1/*`. Auth by an OIDC login or the one local account (session cookie), or the optional master key. Can also serve the web UI.
 2. Core does four things only: **route**, **authenticate**, **meter**, **administer**.
 3. Everything else is an extension that talks to core over network contracts.
 4. Upstream targets, in priority order:
@@ -93,7 +93,7 @@ Packages live under `gateway/internal/`.
 1. `api_keys`: `id, name, prefix, hash (unique), tenant_id, app_id, allowed_models (text[]), metadata (jsonb), created_at, expires_at, revoked_at`.
 2. `usage_records`: `id (= request id), created_at, key_id, tenant_id, app_id, end_user, endpoint, model, provider, upstream_model, stream, status_code, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost_usd, estimated, latency_ms, error`.
    1. Owner labels are copied into each row. Reports need no joins, and history stays correct if a key changes.
-3. `admin_users`: `id, email (unique, lowercase), name, role (admin | viewer), password_hash (argon2id; empty = no password, OIDC only), created_at, updated_at, last_login_at, disabled_at, link_allowed_until`.
+3. `admin_users`: `id, email (unique, lowercase), name, role (admin | viewer), password_hash (argon2id; used only for the local account, D42), created_at, updated_at, last_login_at, disabled_at, link_allowed_until`.
 4. `admin_sessions`: `hash (SHA-256 of the cookie value), user_id (cascade delete), created_at, expires_at, user_agent, ip`.
 5. `admin_identities`: `id, user_id (cascade delete), issuer, subject, email, created_at, last_login_at`. Unique on `(issuer, subject)`. Links an OIDC login to an account (section 6.3).
 6. `admin_oidc_flows`: `id_hash, provider, state, nonce, pkce_verifier, link_user_id, expires_at`. One row per login in progress; used once.
@@ -132,33 +132,33 @@ Packages live under `gateway/internal/`.
 
 ## 6. Admin API (`/admin/v1`)
 
-| Method | Path                                            | Notes                                                                                                                      |
-| ------ | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/admin/v1/auth/methods`                        | No auth. `{password, oidc: [{name, title}]}`: the sign-in methods that are on                                              |
-| POST   | `/admin/v1/auth/login`                          | No auth. `{email, password}` → `{user, role, method}` + session cookie. `403` when `admin.password_login` is off           |
-| GET    | `/admin/v1/auth/oidc/{name}/start`              | No auth. Redirects to the IdP. `?link=1` (signed in): link the login to your account instead (section 6.3)                 |
-| GET    | `/admin/v1/auth/oidc/{name}/callback`           | No auth. The IdP returns here; sets the session cookie, then moves the browser to the UI                                   |
-| GET    | `/admin/v1/auth/identities`                     | Any role. Your own OIDC links                                                                                              |
-| DELETE | `/admin/v1/auth/identities/{id}`                | Any role. Removes one of your own links                                                                                    |
-| POST   | `/admin/v1/auth/logout`                         | Ends the session, clears the cookie                                                                                        |
-| GET    | `/admin/v1/auth/me`                             | Any role. `{user, role, method}`; `user` is null for the master key                                                        |
-| POST   | `/admin/v1/auth/password`                       | Any role, own account. `{current_password, new_password}`; ends other sessions. `403` when `admin.password_login` is off   |
-| GET    | `/admin/v1/users`                               | Admin accounts                                                                                                             |
-| POST   | `/admin/v1/users`                               | `{email, name, role, password}`; `password` is optional (no password = OIDC only)                                          |
-| GET    | `/admin/v1/users/{id}`                          |                                                                                                                            |
-| PATCH  | `/admin/v1/users/{id}`                          | Any of `{name, role, disabled, password}`. Disable or password set ends its sessions                                       |
-| DELETE | `/admin/v1/users/{id}`                          | Hard delete; its sessions and OIDC links go with it                                                                        |
-| GET    | `/admin/v1/users/{id}/identities`               | Its OIDC links                                                                                                             |
-| DELETE | `/admin/v1/users/{id}/identities/{identity_id}` | Removes one link                                                                                                           |
-| POST   | `/admin/v1/users/{id}/identities/allow`         | Allows a one-time link by verified email for 24h (section 6.3)                                                             |
-| GET    | `/admin/v1/keys`                                | `tenant_id`, `app_id`, `include_revoked`, `limit`, `offset`                                                                |
-| POST   | `/admin/v1/keys`                                | `{name, tenant_id, app_id, allowed_models, metadata, expires_at}`                                                          |
-| GET    | `/admin/v1/keys/{id}`                           |                                                                                                                            |
-| DELETE | `/admin/v1/keys/{id}`                           | Revoke (soft)                                                                                                              |
-| GET    | `/admin/v1/models`                              | Aliases, providers, passthrough flag. No secrets.                                                                          |
-| GET    | `/admin/v1/usage`                               | Raw records. Filters: `from, to, id, key_id, tenant_id, app_id, end_user, model`                                           |
-| *      | `/admin/v1/playground/…`                        | Any role. Runs `/v1/{chat/completions, completions, embeddings, models}` in-process with the API key in `X-AIF-Key` (§6.2) |
-| GET    | `/admin/v1/usage/summary`                       | Same filters + `group_by` = `none, day, model, provider, key, tenant, app, end_user`                                       |
+| Method | Path                                            | Notes                                                                                                                                    |
+| ------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/admin/v1/auth/methods`                        | No auth. `{password, oidc: [{name, title}]}`: the sign-in methods that are on                                                            |
+| POST   | `/admin/v1/auth/login`                          | No auth. `{email, password}` → `{user, role, method}` + session cookie. The local account only; `403` when `admin.password_login` is off |
+| GET    | `/admin/v1/auth/oidc/{name}/start`              | No auth. Redirects to the IdP. `?link=1` (signed in): link the login to your account instead (section 6.3)                               |
+| GET    | `/admin/v1/auth/oidc/{name}/callback`           | No auth. The IdP returns here; sets the session cookie, then moves the browser to the UI                                                 |
+| GET    | `/admin/v1/auth/identities`                     | Any role. Your own OIDC links                                                                                                            |
+| DELETE | `/admin/v1/auth/identities/{id}`                | Any role. Removes one of your own links                                                                                                  |
+| POST   | `/admin/v1/auth/logout`                         | Ends the session, clears the cookie                                                                                                      |
+| GET    | `/admin/v1/auth/me`                             | Any role. `{user, role, method}`; `user` is null for the master key                                                                      |
+| POST   | `/admin/v1/auth/password`                       | `403`: the local account's password is set in config (D42)                                                                               |
+| GET    | `/admin/v1/users`                               | Admin accounts                                                                                                                           |
+| POST   | `/admin/v1/users`                               | `{email, name, role}`: an OIDC account. `password` is refused (`400`)                                                                    |
+| GET    | `/admin/v1/users/{id}`                          |                                                                                                                                          |
+| PATCH  | `/admin/v1/users/{id}`                          | Any of `{name, role, disabled}`. Disable ends its sessions. `password` is refused; the local account only takes `name`                   |
+| DELETE | `/admin/v1/users/{id}`                          | Hard delete; its sessions and OIDC links go with it                                                                                      |
+| GET    | `/admin/v1/users/{id}/identities`               | Its OIDC links                                                                                                                           |
+| DELETE | `/admin/v1/users/{id}/identities/{identity_id}` | Removes one link                                                                                                                         |
+| POST   | `/admin/v1/users/{id}/identities/allow`         | Allows a one-time link by verified email for 24h (section 6.3). Not for the local account                                                |
+| GET    | `/admin/v1/keys`                                | `tenant_id`, `app_id`, `include_revoked`, `limit`, `offset`                                                                              |
+| POST   | `/admin/v1/keys`                                | `{name, tenant_id, app_id, allowed_models, metadata, expires_at}`                                                                        |
+| GET    | `/admin/v1/keys/{id}`                           |                                                                                                                                          |
+| DELETE | `/admin/v1/keys/{id}`                           | Revoke (soft)                                                                                                                            |
+| GET    | `/admin/v1/models`                              | Aliases, providers, passthrough flag. No secrets.                                                                                        |
+| GET    | `/admin/v1/usage`                               | Raw records. Filters: `from, to, id, key_id, tenant_id, app_id, end_user, model`                                                         |
+| *      | `/admin/v1/playground/…`                        | Any role. Runs `/v1/{chat/completions, completions, embeddings, models}` in-process with the API key in `X-AIF-Key` (§6.2)               |
+| GET    | `/admin/v1/usage/summary`                       | Same filters + `group_by` = `none, day, model, provider, key, tenant, app, end_user`                                                     |
 
 1. Listens on `127.0.0.1:8081` by default. Not enforced: set `admin.listen` (or `AIF_ADMIN_LISTEN`) to e.g. `0.0.0.0:8081` for public access. The gateway logs a warning when it is not loopback. Use TLS in front.
 2. If `admin.ui_dir` is set, the built web UI is served at `/` with SPA fallback (same origin, no CORS).
@@ -170,23 +170,30 @@ Packages live under `gateway/internal/`.
 3. So the request takes the full client path: key auth, allow-list, hook, upstream, streaming, metering. It is metered to that API key like any request.
 4. It needs a signed-in admin (any role) and a real API key; the CSRF check applies.
 
-### 6.1 Admin sign-in (D16)
+### 6.1 Admin sign-in (D16, D42)
 
-1. **Accounts.** Built-in accounts with email + password, so a fresh install works without any outside identity system.
-   1. Passwords: argon2id (19 MiB, 2 passes; parameters stored in each hash). Min 12 characters.
-   2. Roles: `admin` (everything) and `viewer` (GET only, plus its own password and sign-out).
-   3. Guards: you cannot disable or delete your own account, and the last active admin cannot be demoted, disabled or deleted.
-2. **First account.** One of:
-   1. `admin.bootstrap.{email,password}` (env `AIF_ADMIN_EMAIL`, `AIF_ADMIN_PASSWORD`): created at startup only when no account exists. Safe when several nodes start at once.
-   2. `aif admin create-user -email E [-role viewer]` (password from a hidden prompt or stdin). Also `reset-password` (ends all sessions) and `list-users`. These need only the config and Postgres, not NATS.
-3. **Sessions.**
+1. **Accounts.** Accounts live in `admin_users`. Two kinds (D42):
+   1. **The local account (break-glass)**: the one account whose email is `admin.bootstrap.email`. Only it can sign in with a password, so a fresh install works without any outside identity system, and the gateway stays reachable when the IdP is down.
+   2. **OIDC accounts**: every other account. No password; sign-in only through a linked IdP (section 6.3).
+   3. Roles: `admin` (everything) and `viewer` (GET only, plus its own links and sign-out).
+   4. Guards: you cannot disable or delete your own account, and the last active admin cannot be demoted, disabled or deleted.
+2. **The local account.**
+   1. Config: `admin.bootstrap.email` (env `AIF_ADMIN_EMAIL`) and one of `admin.bootstrap.password` (`AIF_ADMIN_PASSWORD`, plain, for local dev) or `admin.bootstrap.password_hash` (`AIF_ADMIN_PASSWORD_HASH`, an argon2id PHC string, for production). Both set is a config error.
+   2. Read on every start. The account is created if missing, and its role is set to `admin`. If the stored hash does not match config (plain: the password does not verify; hash: the strings differ), the stored hash is replaced and the account's sessions end. Safe when several nodes start at once.
+   3. Passwords: argon2id (19 MiB, 2 passes; parameters stored in each hash). Min 12 characters for a plain password.
+   4. The API and UI cannot change its role, disable it, delete it, set its password or link it to an IdP. User objects show it with `local: true`.
+   5. Password hashes of other accounts (from before D42) are ignored, not deleted, and their count is logged at startup.
+   6. `admin.password_login: false` turns off its password too: `POST /admin/v1/auth/login` returns `403`. Without `admin.bootstrap.email` there is no local account.
+   7. Every password sign-in logs a warning and publishes `aif.audit.v1.breakglass` (section 8.1). The UI shows a banner while signed in with it.
+3. **CLI.** `aif admin create-user -email E [-role viewer]` (an OIDC account, no password), `list-users`, and `hash-password` (reads a password from a hidden prompt or stdin, prints the argon2id hash for `AIF_ADMIN_PASSWORD_HASH`). These need only the config and Postgres, not NATS. `reset-password` is gone: the password is set in config.
+4. **Sessions.**
    1. Cookie `aif_session`: random 256-bit token, `HttpOnly`, `SameSite=Strict`, `Path=/`. `Secure` by `admin.cookie_secure` (`auto` = HTTPS or `X-Forwarded-Proto: https`).
    2. Only the SHA-256 of the token is stored, so a database leak does not leak sessions. Sessions live in Postgres, so they work on every node.
-   3. Lifetime `admin.session_ttl` (default 12h). Expired rows are deleted on each new sign-in.
-4. **CSRF.** Writes with a session cookie must have `Origin` equal to the request host (or `Sec-Fetch-Site: same-origin` when there is no `Origin`). Login and logout are checked too.
-5. **Brute force.** Per node: 10 failed sign-ins per email and 100 per client IP in 15 min, then `429`. Unknown emails take the same time as wrong passwords. The client IP is the TCP peer, or the client IP header when the peer is in `server.trusted_proxies` ([spec-0003](spec-0003-production-readiness.md) D21).
-6. **Master key** (optional). `admin.master_key` as a bearer token acts with the `admin` role, for scripts and emergency access. A wrong bearer token never falls back to the cookie. Empty = off.
-7. **Outside logins.** OIDC login maps a verified identity to an `AdminUser` and calls `auth.Service.IssueSession` (section 6.3, D41).
+   3. Lifetime `admin.session_ttl` (default 12h; `admin.oidc.session_ttl` for OIDC sign-ins). Expired rows are deleted on each new sign-in.
+5. **CSRF.** Writes with a session cookie must have `Origin` equal to the request host (or `Sec-Fetch-Site: same-origin` when there is no `Origin`). Login and logout are checked too.
+6. **Brute force.** Per node: 10 failed sign-ins per email and 100 per client IP in 15 min, then `429`. Unknown emails take the same time as wrong passwords. The client IP is the TCP peer, or the client IP header when the peer is in `server.trusted_proxies` ([spec-0003](spec-0003-production-readiness.md) D21).
+7. **Master key** (optional). `admin.master_key` as a bearer token acts with the `admin` role, for scripts and emergency access. A wrong bearer token never falls back to the cookie. Empty = off; leave it empty in production unless scripts need it. Each use logs a warning; `aif.audit.v1.breakglass` is published at most once per node per minute.
+8. **Outside logins.** OIDC login maps a verified identity to an `AdminUser` and calls `auth.Service.IssueSession` (section 6.3, D41).
 
 ### 6.3 Outside login: OIDC (D41)
 
@@ -195,7 +202,7 @@ Packages live under `gateway/internal/`.
    ```yaml
    admin:
      public_url: https://admin.example.com # the IdP redirects back here; never taken from the Host header
-     password_login: true                  # false: password sign-in and password change return 403
+     password_login: true                  # false: the local account's password is off too (section 6.1 item 2.6)
      oidc:
        session_ttl: 1h                     # sessions from an OIDC login; default admin.session_ttl
        providers:
@@ -207,21 +214,23 @@ Packages live under `gateway/internal/`.
            scopes: [openid, email, profile] # default
            link_by_email: false            # default; see item 4.4
    ```
-   1. Each provider's discovery document (`<issuer>/.well-known/openid-configuration`) is read at startup and cached. A provider that cannot be reached is logged and its button hidden; it is tried again on the next start.
+   1. Each provider's discovery document (`<issuer>/.well-known/openid-configuration`) is read at startup and cached. A provider that cannot be reached is logged; the next `start` for it tries again, at most every 30 seconds, and answers `503` with a short error page while it still fails. Its button stays on the sign-in page.
    2. The redirect URL to register at the IdP is `<public_url>/admin/v1/auth/oidc/<name>/callback`.
 3. **Flow.**
    1. Start: the gateway makes a random flow id, state, nonce and PKCE verifier (S256). It stores them in `admin_oidc_flows` (only the SHA-256 of the flow id; 10 minute life; expired rows deleted on each new flow) and sets the cookie `aif_oidc` = flow id.
    2. `aif_oidc` is `HttpOnly`, `Secure` as `aif_session`, `SameSite=Lax`, `Path=/admin/v1/auth/oidc`. Lax is needed: the IdP sends the browser back from another site, and a `Strict` cookie is not sent on that redirect.
    3. Callback: the gateway looks up the flow by the cookie, checks `state`, exchanges the code with the PKCE verifier, and verifies the ID token (signature, `iss`, `aud`, `exp`, `nonce`). The flow row is deleted first, so it is used once. Any failure ends at the sign-in page with a short error and is logged.
-   4. Then it finds the account (item 4) and issues a normal session (`aif_session`). It answers with a small same-origin page that moves the browser to the UI, so the next request carries the `SameSite=Strict` session cookie.
-   5. The flow state is in Postgres, so start and callback may land on different nodes, and no shared secret is needed.
+   4. Claims: `email` and `email_verified` come from the ID token, or from the userinfo endpoint when the token lacks them.
+   5. Then it finds the account (item 4) and issues a normal session (`aif_session`). It answers with a small same-origin page that moves the browser to the UI, so the next request carries the `SameSite=Strict` session cookie.
+   6. The flow state is in Postgres, so start and callback may land on different nodes, and no shared secret is needed.
 4. **Accounts.** No sign-up through the IdP. A login is accepted only for an active account linked to it:
    1. A link is `(issuer, subject)` in `admin_identities`. Logins match by the link, never by email alone.
-   2. A signed-in user links their own login with `start?link=1`; the callback then adds the link and keeps the current session.
-   3. An admin allows a one-time link for a user (`.../identities/allow`, sets `link_allowed_until` = now + 24h). The next OIDC login whose email matches that user, with `email_verified: true`, adds the link and clears the allowance. This gives a user with no password their first login.
+   2. An admin allows a one-time link for an account (`.../identities/allow`, sets `link_allowed_until` = now + 24h). The next OIDC login whose email matches that account, with `email_verified: true`, adds the link and clears the allowance. This is how a new account gets its first login.
+   3. A signed-in user links another IdP with `start?link=1`; the flow row holds the user id, and the callback adds the link and keeps the current session.
    4. `link_by_email: true` on a provider allows that one-time link for every active account, without the admin step. Off by default: some IdPs allow open sign-up or set `email_verified` loosely. Use it only for an IdP whose users you control.
    5. The role is the gateway's (`admin` or `viewer`). Claims from the IdP do not change it. A disabled account cannot sign in, linked or not.
-   6. The guards of section 6.1 still hold. The last active admin keeps working because the master key and the CLI (`aif admin reset-password`) work in every mode.
+   6. The local account cannot be linked or matched; it stays separate from the IdP.
+   7. The guards of section 6.1 still hold. The way back in when no admin can sign in through the IdP is the local account or the master key.
 5. **Sign-out.** `POST /admin/v1/auth/logout` ends the gateway session only. The IdP session stays.
 
 ## 7. Metering rules
@@ -257,12 +266,13 @@ The stable contracts are **network contracts**, not Go imports. Extensions can b
 
 Subjects are set in config (`nats.*`). Defaults:
 
-| Subject                          | Kind                         | Payload                                    |
-| -------------------------------- | ---------------------------- | ------------------------------------------ |
-| `aif.usage.v1.<tenant>.<app>`    | JetStream stream `AIF_USAGE` | One `store.UsageRecord` (JSON) per request |
-| `aif.control.v1.key_revoked`     | Core pub/sub                 | `{type, id, node, at}`                     |
-| `aif.control.v1.catalog_changed` | Core pub/sub                 | `{type, revision, node, at}` (spec-0006)   |
-| `aif.hook.pre_request.v1`        | Request/reply                | `hook.Request` -> `hook.Decision`          |
+| Subject                          | Kind                         | Payload                                                      |
+| -------------------------------- | ---------------------------- | ------------------------------------------------------------ |
+| `aif.usage.v1.<tenant>.<app>`    | JetStream stream `AIF_USAGE` | One `store.UsageRecord` (JSON) per request                   |
+| `aif.control.v1.key_revoked`     | Core pub/sub                 | `{type, id, node, at}`                                       |
+| `aif.control.v1.catalog_changed` | Core pub/sub                 | `{type, revision, node, at}` (spec-0006)                     |
+| `aif.hook.pre_request.v1`        | Request/reply                | `hook.Request` -> `hook.Decision`                            |
+| `aif.audit.v1.breakglass`        | Core pub/sub                 | `{type, method, user_id, email, ip, node, at}` (section 6.1) |
 
 1. **Usage events**
    1. Subject tokens: empty label → `_`. Bytes outside `[A-Za-z0-9_-]` are `%XX`-escaped (`chat.bot` → `chat%2Ebot`), so tenant and app are always one token each. Subscribers can filter with `aif.usage.v1.acme.>`.
@@ -308,7 +318,8 @@ Subjects are set in config (`nats.*`). Defaults:
 | D14 | NATS is required, not optional                          | One code path; multi-node correct by default (revocation, usage stream); extensions can rely on it. Cost: one more process, even for a single node                                                                                   |
 | D15 | PostgreSQL is required; SQLite removed                  | Same reason as D14: one code path, one test suite, multi-node by default. NATS already made aif a multi-process setup, so SQLite's zero setup is gone anyway. pgx is pure Go. Tests use an embedded Postgres, so no Docker is needed |
 | D16 | Built-in admin accounts + sessions; master key optional | A gateway must be operable alone, before any identity system exists. Sessions in Postgres work on every node. Outside logins plug in later via `IssueSession`                                                                        |
-| D41 | Generic OIDC client for admin login; passwords optional | 2FA, passkeys and Google login come from the IdP, so the gateway owns no such code and needs no new service. Not a forward-auth header: a header can be faked when the admin port is reached directly (change-0013)                  |
+| D41 | Generic OIDC client for admin login                     | 2FA, passkeys and Google login come from the IdP, so the gateway owns no such code and needs no new service. Not a forward-auth header: a header can be faked when the admin port is reached directly (change-0013)                  |
+| D42 | One local password account (break-glass), from config   | Extra local accounts cannot appear by accident, and none of them skips the IdP's 2FA. The one local account keeps the gateway reachable when the IdP is down; every use is logged and published (change-0013)                        |
 
 ## 10. Known limits (MVP)
 
