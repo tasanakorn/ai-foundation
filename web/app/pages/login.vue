@@ -7,14 +7,27 @@ const { login } = useSession()
 const toast = useToast()
 const route = useRoute()
 
-// Sign-in methods: identity provider buttons, and the local account's password form.
+// Sign-in methods: identity provider buttons, or the local account's password form.
+// The password is never on together with an identity provider (spec-0001 D43).
 const { data: methods } = await useAsyncData('auth-methods', () => $fetch<AuthMethods>('/admin/v1/auth/methods'))
 const error = computed(() => typeof route.query.error === 'string' ? route.query.error : '')
+const signedOut = computed(() => route.query.signed_out === '1')
+
+// The page that was asked for, opened after sign-in (the IdP returns to /).
+keepNext(typeof route.query.next === 'string' ? route.query.next : '')
+
+const startURL = (name: string) => `/admin/v1/auth/oidc/${name}/start`
+
+// Auto redirect, but never after an error or a sign-out, so it cannot loop (section 6.4).
+const redirecting = ref(false)
+const auto = methods.value?.auto_redirect ?? ''
+if (auto && !error.value && !signedOut.value && methods.value?.oidc.some(p => p.name === auto)) {
+  redirecting.value = true
+  window.location.assign(startURL(auto))
+}
 
 const form = reactive({ email: '', password: '' })
 const loading = ref(false)
-const showPassword = ref(false)
-const passwordOnly = computed(() => (methods.value?.oidc.length ?? 0) === 0)
 
 async function submit() {
   if (!form.email || !form.password) return
@@ -42,38 +55,33 @@ async function submit() {
         </div>
       </template>
 
-      <div class="space-y-4">
+      <p v-if="redirecting" class="text-sm text-muted">
+        Going to sign-in...
+      </p>
+
+      <div v-else class="space-y-4">
         <UAlert v-if="error" icon="i-lucide-circle-alert" color="error" variant="subtle" :title="error" />
+        <UAlert v-else-if="signedOut" icon="i-lucide-log-out" color="neutral" variant="subtle" title="Signed out" />
 
         <UButton
           v-for="p in methods?.oidc ?? []"
           :key="p.name"
-          :href="`/admin/v1/auth/oidc/${p.name}/start`"
+          :href="startURL(p.name)"
           external
           block
-          icon="i-lucide-log-in"
-          :label="`Sign in with ${p.title}`"
+          :icon="error ? 'i-lucide-rotate-cw' : 'i-lucide-log-in'"
+          :label="error ? `Try again with ${p.title}` : `Sign in with ${p.title}`"
         />
 
-        <template v-if="methods?.password">
-          <UButton
-            v-if="!passwordOnly && !showPassword"
-            block
-            color="neutral"
-            variant="link"
-            label="Use the local break-glass account"
-            @click="showPassword = true"
-          />
-          <form v-if="passwordOnly || showPassword" class="space-y-4" @submit.prevent="submit">
-            <UFormField label="Email">
-              <UInput v-model="form.email" type="email" autocomplete="username" :autofocus="passwordOnly" class="w-full" placeholder="admin@example.com" />
-            </UFormField>
-            <UFormField label="Password">
-              <UInput v-model="form.password" type="password" autocomplete="current-password" class="w-full" />
-            </UFormField>
-            <UButton type="submit" block :loading="loading" label="Sign in" :color="passwordOnly ? 'primary' : 'warning'" />
-          </form>
-        </template>
+        <form v-if="methods?.password" class="space-y-4" @submit.prevent="submit">
+          <UFormField label="Email">
+            <UInput v-model="form.email" type="email" autocomplete="username" autofocus class="w-full" placeholder="admin@example.com" />
+          </UFormField>
+          <UFormField label="Password">
+            <UInput v-model="form.password" type="password" autocomplete="current-password" class="w-full" />
+          </UFormField>
+          <UButton type="submit" block :loading="loading" label="Sign in" />
+        </form>
 
         <p v-if="methods && !methods.password && methods.oidc.length === 0" class="text-sm text-muted">
           No sign-in method is on. Set <code>admin.oidc</code> or <code>admin.bootstrap</code> in the gateway config.
