@@ -134,8 +134,8 @@ Packages live under `gateway/internal/`.
 
 | Method | Path                                            | Notes                                                                                                                                    |
 | ------ | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/admin/v1/auth/methods`                        | No auth. `{password, oidc: [{name, title}]}`: the sign-in methods that are on                                                            |
-| POST   | `/admin/v1/auth/login`                          | No auth. `{email, password}` → `{user, role, method}` + session cookie. The local account only; `403` when `admin.password_login` is off |
+| GET    | `/admin/v1/auth/methods`                        | No auth. `{password, oidc: [{name, title}], auto_redirect}`: the sign-in methods that are on (section 6.4)                               |
+| POST   | `/admin/v1/auth/login`                          | No auth. `{email, password}` → `{user, role, method}` + session cookie. The local account only; `403` when the password is off (D43)     |
 | GET    | `/admin/v1/auth/oidc/{name}/start`              | No auth. Redirects to the IdP. `?link=1` (signed in): link the login to your account instead (section 6.3)                               |
 | GET    | `/admin/v1/auth/oidc/{name}/callback`           | No auth. The IdP returns here; sets the session cookie, then moves the browser to the UI                                                 |
 | GET    | `/admin/v1/auth/identities`                     | Any role. Your own OIDC links                                                                                                            |
@@ -173,7 +173,7 @@ Packages live under `gateway/internal/`.
 ### 6.1 Admin sign-in (D16, D42)
 
 1. **Accounts.** Accounts live in `admin_users`. Two kinds (D42):
-   1. **The local account (break-glass)**: the one account whose email is `admin.bootstrap.email`. Only it can sign in with a password, so a fresh install works without any outside identity system, and the gateway stays reachable when the IdP is down.
+   1. **The local account (break-glass)**: the one account whose email is `admin.bootstrap.email`. Only it can sign in with a password, and only while no OIDC provider is set (D43), so a fresh install works without any outside identity system.
    2. **OIDC accounts**: every other account. No password; sign-in only through a linked IdP (section 6.3).
    3. Roles: `admin` (everything) and `viewer` (GET only, plus its own links and sign-out).
    4. Guards: you cannot disable or delete your own account, and the last active admin cannot be demoted, disabled or deleted.
@@ -183,7 +183,7 @@ Packages live under `gateway/internal/`.
    3. Passwords: argon2id (19 MiB, 2 passes; parameters stored in each hash). Min 12 characters for a plain password.
    4. The API and UI cannot change its role, disable it, delete it, set its password or link it to an IdP. User objects show it with `local: true`.
    5. Password hashes of other accounts (from before D42) are ignored, not deleted, and their count is logged at startup.
-   6. `admin.password_login: false` turns off its password too: `POST /admin/v1/auth/login` returns `403`. Without `admin.bootstrap.email` there is no local account.
+   6. Its password is off when `admin.oidc.providers` has any provider (D43), or when `admin.password_login: false`: `POST /admin/v1/auth/login` returns `403` and `methods` says `password: false`. The account is still synced from config, so removing `admin.oidc` and restarting turns its password on again (the way back in when the IdP is down). Without `admin.bootstrap.email` there is no local account.
    7. Every password sign-in logs a warning and publishes `aif.audit.v1.breakglass` (section 8.1). The UI shows a warning in the sidebar while signed in with it.
 3. **CLI.** `aif admin create-user -email E [-role viewer]` (an OIDC account, no password), `list-users`, and `hash-password` (reads a password from a hidden prompt or stdin, prints the argon2id hash for `AIF_ADMIN_PASSWORD_HASH`). These need only the config and Postgres, not NATS. `reset-password` is gone: the password is set in config.
 4. **Sessions.**
@@ -202,8 +202,9 @@ Packages live under `gateway/internal/`.
    ```yaml
    admin:
      public_url: https://admin.example.com # the IdP redirects back here; never taken from the Host header
-     password_login: true                  # false: the local account's password is off too (section 6.1 item 2.6)
+     password_login: true                  # false: the local password is off even without OIDC (section 6.1 item 2.6)
      oidc:
+       auto_redirect: sso                  # default empty; send the sign-in page straight to this provider (section 6.4)
        session_ttl: 1h                     # sessions from an OIDC login; default admin.session_ttl
        providers:
          - name: sso                       # in URLs: /admin/v1/auth/oidc/sso/...
@@ -233,8 +234,16 @@ Packages live under `gateway/internal/`.
    5. `allowed_groups`: when set, a login or a link is accepted only if the `groups_claim` claim (a list of strings, from the ID token or userinfo) has one of the groups; otherwise `403` at the sign-in page, logged. Use it when the IdP also has users who sign up by themselves (end users of other apps). Add `groups` (or what the IdP needs) to `scopes`.
    6. The role is the gateway's (`admin` or `viewer`). Claims from the IdP do not change it. A disabled account cannot sign in, linked or not.
    7. The local account cannot be linked or matched; it stays separate from the IdP.
-   8. The guards of section 6.1 still hold. The way back in when no admin can sign in through the IdP is the local account or the master key.
+   8. The guards of section 6.1 still hold. The way back in when no admin can sign in through the IdP is the master key, or removing `admin.oidc` and restarting, which turns the local account's password on again (D43).
 5. **Sign-out.** `POST /admin/v1/auth/logout` ends the gateway session only. The IdP session stays.
+
+### 6.4 Sign-in page and auto redirect
+
+1. `admin.oidc.auto_redirect` names one of the providers (else a config error). `methods` returns it as `auto_redirect` (empty when off).
+2. When it is set and there is no session, the sign-in page sends the browser to `/admin/v1/auth/oidc/<name>/start` at once.
+3. No loop: the page does not redirect when it shows an error (`/login?error=...`) or after sign-out (`/login?signed_out=1`). It shows a button instead. Every failed `start` or `callback` lands on `/login?error=...`.
+4. Deep link: a page opened without a session goes to `/login?next=<path>`. The UI keeps `next` (local paths only) in session storage across the IdP round trip and opens it after sign-in.
+5. The redirect is done by the UI; the API has no redirect of its own, so scripts and the master key are not affected.
 
 ## 7. Metering rules
 
@@ -322,7 +331,8 @@ Subjects are set in config (`nats.*`). Defaults:
 | D15 | PostgreSQL is required; SQLite removed                  | Same reason as D14: one code path, one test suite, multi-node by default. NATS already made aif a multi-process setup, so SQLite's zero setup is gone anyway. pgx is pure Go. Tests use an embedded Postgres, so no Docker is needed |
 | D16 | Built-in admin accounts + sessions; master key optional | A gateway must be operable alone, before any identity system exists. Sessions in Postgres work on every node. Outside logins plug in later via `IssueSession`                                                                        |
 | D41 | Generic OIDC client for admin login                     | 2FA, passkeys and Google login come from the IdP, so the gateway owns no such code and needs no new service. Not a forward-auth header: a header can be faked when the admin port is reached directly (change-0013)                  |
-| D42 | One local password account (break-glass), from config   | Extra local accounts cannot appear by accident, and none of them skips the IdP's 2FA. The one local account keeps the gateway reachable when the IdP is down; every use is logged and published (change-0013)                        |
+| D42 | One local password account (break-glass), from config   | Extra local accounts cannot appear by accident, and none of them skips the IdP's 2FA. Every use is logged and published (change-0013). Since D43 it works only without OIDC                                                          |
+| D43 | Password sign-in only when no OIDC provider is set      | A password beside the IdP is a way around its 2FA. Way back in when the IdP is down: remove `admin.oidc` and restart, or the master key (change-0014)                                                                                |
 
 ## 10. Known limits (MVP)
 
