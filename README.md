@@ -118,7 +118,7 @@ make build    # web/.output/public + gateway/bin/aif
 There is no prebuilt image or binary. Build from a release tag (see [CHANGELOG.md](CHANGELOG.md)):
 
 ```sh
-git checkout v0.5.0
+git checkout v0.6.0
 make build    # web/.output/public + gateway/bin/aif (version from the tag)
 ```
 

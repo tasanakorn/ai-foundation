@@ -1,6 +1,6 @@
 # change-0014: OIDC-only sign-in, auto redirect
 
-- Status: applied (on merge of its pull request; not yet released)
+- Status: applied (released in v0.6.0)
 - Date: 2026-11-27
 - Related: [task-0026](../tasks/task-0026-oidc-only-sign-in.md); [spec-0001](../specs/spec-0001-gateway-core-architecture.md) sections 6, 6.1, 6.3, D42 and D43; [change-0013](change-0013-oidc-admin-login.md)
 
