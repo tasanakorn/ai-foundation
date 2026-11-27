@@ -211,11 +211,12 @@ The stable contracts are **network contracts**, not Go imports. Extensions can b
 
 Subjects are set in config (`nats.*`). Defaults:
 
-| Subject                       | Kind                         | Payload                                    |
-| ----------------------------- | ---------------------------- | ------------------------------------------ |
-| `aif.usage.v1.<tenant>.<app>` | JetStream stream `AIF_USAGE` | One `store.UsageRecord` (JSON) per request |
-| `aif.control.v1.key_revoked`  | Core pub/sub                 | `{type, id, node, at}`                     |
-| `aif.hook.pre_request.v1`     | Request/reply                | `hook.Request` → `hook.Decision`           |
+| Subject                          | Kind                         | Payload                                    |
+| -------------------------------- | ---------------------------- | ------------------------------------------ |
+| `aif.usage.v1.<tenant>.<app>`    | JetStream stream `AIF_USAGE` | One `store.UsageRecord` (JSON) per request |
+| `aif.control.v1.key_revoked`     | Core pub/sub                 | `{type, id, node, at}`                     |
+| `aif.control.v1.catalog_changed` | Core pub/sub                 | `{type, revision, node, at}` (spec-0006)   |
+| `aif.hook.pre_request.v1`        | Request/reply                | `hook.Request` -> `hook.Decision`          |
 
 1. **Usage events**
    1. Subject tokens: empty label → `_`. Bytes outside `[A-Za-z0-9_-]` are `%XX`-escaped (`chat.bot` → `chat%2Ebot`), so tenant and app are always one token each. Subscribers can filter with `aif.usage.v1.acme.>`.
@@ -229,7 +230,7 @@ Subjects are set in config (`nats.*`). Defaults:
    4. A modified body is parsed, routed and allow-list checked again. The hook cannot widen a key's model access.
    5. Timeout (default 200 ms), no responder, bad reply → `fail_open: true` allows; `false` answers `503 hook_unavailable`.
    6. Extensions subscribe with a queue group, so copies share the load.
-3. **Control events**: every node subscribes. `key_revoked` drops that key from the auth cache.
+3. **Control events**: every node subscribes. `key_revoked` drops that key from the auth cache. `catalog_changed` makes each node reload the catalog when the revision is newer than the one it serves (spec-0006).
 
 ### 8.2 Failure behavior
 

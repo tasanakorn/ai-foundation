@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-foundation/gateway/internal/catalog"
+	"ai-foundation/gateway/internal/config"
 	"ai-foundation/gateway/internal/provider"
 	"ai-foundation/gateway/internal/store"
 )
@@ -89,5 +91,103 @@ func TestCatalogSwapDuringRequest(t *testing.T) {
 	}
 	if code, out := e.do(e.admin.URL, "GET", "/admin/v1/models", masterKey, ""); code != 200 || !strings.Contains(out, `"new-up"`) || strings.Contains(out, `"vendor/small-v1"`) {
 		t.Fatalf("admin models after swap: %d %s", code, out)
+	}
+}
+
+func eventually(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if ok() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func addModel(name string) func(*store.Catalog) error {
+	return func(c *store.Catalog) error {
+		c.Models = append(c.Models, store.CatalogModel{Name: name, Targets: []store.CatalogTarget{{Provider: "fake", Upstream: "vendor/" + name}}})
+		return nil
+	}
+}
+
+// A change committed on one node reaches the others through catalog_changed (spec-0006 section 5.3).
+func TestCatalogEventReachesPeer(t *testing.T) {
+	t.Parallel()
+	a := newEnv(t)
+	b := a.peer()
+	ctx := context.Background()
+	c, err := catalog.Update(ctx, a.st, 1, "admin", "add model", addModel("added"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := a.app.Catalogs.Committed(ctx, c.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if a.app.Catalog.Revision() != 2 {
+		t.Fatalf("writer serves revision %d", a.app.Catalog.Revision())
+	}
+	eventually(t, "the peer on revision 2", func() bool { return b.app.Catalog.Revision() == 2 })
+	t.Logf("peer reloaded %v after the commit", time.Since(start).Round(time.Millisecond))
+
+	secret, _ := b.createKey(`{}`)
+	if code, out := b.do(b.gw.URL, "POST", "/v1/chat/completions", secret, `{"model":"added","messages":[]}`); code != 200 {
+		t.Fatalf("new model on the peer: %d %s", code, out)
+	}
+}
+
+// Without an event (lost, or a writer that did not publish), the revision poll catches up.
+func TestCatalogPollWithoutEvent(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, func(c *config.Config) { c.Catalog.PollInterval = 100 * time.Millisecond })
+	if _, err := catalog.Update(context.Background(), e.st, 1, "admin", "no event", addModel("quiet")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "revision 2 by poll", func() bool { return e.app.Catalog.Revision() == 2 })
+}
+
+// A reload that fails keeps the last good snapshot and counts the error (spec-0006 section 5.5).
+func TestCatalogFailedReloadKeepsLastGood(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	// Valid catalog, but the key reference does not resolve on this node.
+	c, err := catalog.Update(ctx, e.st, 1, "admin", "bad key", func(c *store.Catalog) error {
+		c.Providers[0].Accounts[0].KeyRef = "env:AIF_TEST_KEY_NOT_SET"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Catalogs.Committed(ctx, c.Revision); err == nil {
+		t.Fatal("reload with an unresolved key reported success")
+	}
+	if e.app.Catalog.Revision() != 1 {
+		t.Fatalf("serving revision %d after a failed reload", e.app.Catalog.Revision())
+	}
+	secret, _ := e.createKey(`{}`)
+	if code, out := e.do(e.gw.URL, "POST", "/v1/chat/completions", secret, `{"model":"small","messages":[]}`); code != 200 {
+		t.Fatalf("last good catalog not served: %d %s", code, out)
+	}
+
+	// Fixed: the next reload succeeds.
+	c, err = catalog.Update(ctx, e.st, c.Revision, "admin", "fix key", func(c *store.Catalog) error {
+		c.Providers[0].Accounts[0].KeyRef = "env:AIF_TEST_UPSTREAM_KEY"
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Catalogs.Committed(ctx, c.Revision); err != nil || e.app.Catalog.Revision() != 3 {
+		t.Fatalf("reload after the fix: rev %d, %v", e.app.Catalog.Revision(), err)
+	}
+	var buf strings.Builder
+	e.app.Metrics.Registry().Write(&buf)
+	// error is 1 or 2: this node may also retry on its own catalog_changed event.
+	for _, line := range []string{`aif_catalog_reloads_total{result="error"} `, `aif_catalog_reloads_total{result="ok"} 1` + "\n", "aif_catalog_revision 3\n"} {
+		if !strings.Contains(buf.String(), line) {
+			t.Errorf("metrics miss %q", line)
+		}
 	}
 }

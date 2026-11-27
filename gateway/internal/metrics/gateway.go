@@ -17,6 +17,8 @@ type Checks struct {
 	NATS     func() error
 	Database func() error
 	Dropped  func() int64 // usage records dropped by the recorder
+	// Catalog is the revision this node serves and when that snapshot was loaded.
+	Catalog func() (revision int64, loadedAt time.Time)
 }
 
 // Gateway is the gateway's metric set (spec-0003 section 4.4). A nil *Gateway is a no-op,
@@ -30,6 +32,7 @@ type Gateway struct {
 	cost      *Vec
 	hooks     *Vec
 	sinkErrs  *Vec
+	reloads   *Vec
 }
 
 // New builds the metric set. The endpoint is served only when metrics.listen is on.
@@ -50,6 +53,21 @@ func New(version string, c Checks) *Gateway {
 			return 0
 		}
 		return float64(c.Dropped())
+	})
+	g.reloads = r.Counter("aif_catalog_reloads_total", "Catalog reloads that found a new revision, by result (ok, error).", "result")
+	r.GaugeFunc("aif_catalog_revision", "Catalog revision this node serves.", func() float64 {
+		if c.Catalog == nil {
+			return 0
+		}
+		rev, _ := c.Catalog()
+		return float64(rev)
+	})
+	r.GaugeFunc("aif_catalog_last_reload_seconds", "Unix time when the served catalog was loaded.", func() float64 {
+		if c.Catalog == nil {
+			return 0
+		}
+		_, at := c.Catalog()
+		return float64(at.Unix())
 	})
 	r.GaugeFunc("aif_nats_up", "1 when the NATS connection is up.", up(c.NATS))
 	r.GaugeFunc("aif_database_up", "1 when the database answers a ping.", up(c.Database))
@@ -104,6 +122,14 @@ func (g *Gateway) SinkError(sink string) {
 		return
 	}
 	g.sinkErrs.Inc(sink)
+}
+
+// CatalogReload counts one catalog reload: ok or error. It implements catalog.Observer.
+func (g *Gateway) CatalogReload(result string) {
+	if g == nil {
+		return
+	}
+	g.reloads.Inc(result)
 }
 
 // HookDecision counts one pre-request hook result: allow, deny, modify or unavailable.

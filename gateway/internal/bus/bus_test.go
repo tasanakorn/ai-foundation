@@ -123,3 +123,36 @@ func TestPreRequestHookOmitsBigBody(t *testing.T) {
 		t.Fatalf("hook got body_omitted=%v body=%v", req["body_omitted"], req["body"] != nil)
 	}
 }
+
+// catalog_changed is a public contract (spec-0001 section 8.1): pin its subject and fields.
+func TestCatalogChangedEvent(t *testing.T) {
+	url := natstest.Run(t)
+	b, err := bus.Connect(context.Background(), natstest.Config(t, url), quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close(context.Background())
+	raw, err := b.Conn().SubscribeSync("aif.control.v1.catalog_changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan int64, 1)
+	if err := b.OnCatalogChanged(func(rev int64) { got <- rev }); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.PublishCatalogChanged(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	if rev := <-got; rev != 7 {
+		t.Fatalf("handler got revision %d", rev)
+	}
+	m, err := raw.NextMsg(time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev map[string]any
+	_ = json.Unmarshal(m.Data, &ev)
+	if ev["type"] != "catalog_changed" || ev["revision"] != float64(7) || ev["node"] != b.NodeID || ev["at"] == nil || len(ev) != 4 {
+		t.Fatalf("payload: %s", m.Data)
+	}
+}

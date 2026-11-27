@@ -55,12 +55,12 @@ New setting `catalog.mode`:
 1. Each node holds one immutable snapshot: providers with their accounts, the router with its models and targets, and the revision. Requests read it through an atomic pointer, with no lock on the request path.
 2. A request keeps the snapshot it started with, so a reload never changes a request halfway.
 3. How nodes learn about a change:
-   1. The writer publishes `aif.control.v1.catalog_changed` with `{"revision": N}` after the commit. This is a new subject on the existing control prefix, so it is additive (spec-0001 section 8.1).
+   1. The writer publishes `aif.control.v1.catalog_changed` with `{"type": "catalog_changed", "revision": N, "node", "at"}` after the commit (the same shape as `key_revoked`). This is a new subject on the existing control prefix, so it is additive (spec-0001 section 8.1).
    2. Every node also polls `catalog_meta.revision` every 30s (`catalog.poll_interval`), and once after a NATS reconnect, so a missed event costs at most one poll interval.
    3. A node loads the new catalog only when its revision is higher than the one it has.
 4. File mode: the node watches `aif.yaml` (it checks the file's change time and content hash every 5s, `catalog.watch_interval`) and on SIGHUP. When the catalog differs from the database, the node writes it with a revision check (the first node wins; the others then see equal content and write nothing), and the event in 5.3 tells the others. In database mode, SIGHUP reloads from the database. A file that fails validation is logged and ignored; the last good catalog stays.
 5. A reload that fails (database down, a reference that does not resolve) keeps the last good snapshot, logs an error and sets the metric in section 7. The node retries at the next poll.
-6. State carries over: account cooldowns and round-robin positions (spec-0004 section 4.4) move to the new snapshot by provider and account name. Renamed or removed accounts start fresh.
+6. State carries over: account cooldowns and round-robin positions (spec-0004 section 4.4) move to the new snapshot by provider and account name. Renamed or removed accounts start fresh. This is built with the account pool (task-0020); until then a snapshot has no per-account state.
 
 ## 6. Startup
 

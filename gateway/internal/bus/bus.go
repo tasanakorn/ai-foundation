@@ -4,7 +4,8 @@
 // only needs a NATS client:
 //
 //	<usage.subject_prefix>.<tenant>.<app>   one JSON UsageRecord per request (JetStream stream)
-//	<control.subject_prefix>.key_revoked    {"type","id","node","at"}; every node drops the key
+//	<control.subject_prefix>.key_revoked      {"type","id","node","at"}; every node drops the key
+//	<control.subject_prefix>.catalog_changed  {"type","revision","node","at"}; every node reloads the catalog
 //	<hooks.pre_request.subject>             request/reply; see package hook
 package bus
 
@@ -184,6 +185,44 @@ func (b *Bus) PublishKeyRevoked(ctx context.Context, keyID string) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	return b.nc.FlushWithContext(ctx)
+}
+
+const EventCatalogChanged = "catalog_changed"
+
+// CatalogEvent says the catalog in the database reached Revision (spec-0006 section 5.3).
+type CatalogEvent struct {
+	Type     string    `json:"type"`
+	Revision int64     `json:"revision"`
+	Node     string    `json:"node"`
+	At       time.Time `json:"at"`
+}
+
+// PublishCatalogChanged tells every node that the catalog is at revision rev.
+func (b *Bus) PublishCatalogChanged(ctx context.Context, rev int64) error {
+	data, _ := json.Marshal(CatalogEvent{Type: EventCatalogChanged, Revision: rev, Node: b.NodeID, At: time.Now().UTC()})
+	if err := b.nc.Publish(b.controlSubject(EventCatalogChanged), data); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return b.nc.FlushWithContext(ctx)
+}
+
+// OnCatalogChanged calls fn for every catalog_changed event, from any node (this one included).
+// fn runs on the NATS goroutine, so it must not block.
+func (b *Bus) OnCatalogChanged(fn func(rev int64)) error {
+	_, err := b.nc.Subscribe(b.controlSubject(EventCatalogChanged), func(m *nats.Msg) {
+		var ev CatalogEvent
+		if err := json.Unmarshal(m.Data, &ev); err != nil || ev.Revision <= 0 {
+			b.log.Warn("bad control event", "subject", m.Subject, "err", err)
+			return
+		}
+		fn(ev.Revision)
+	})
+	if err != nil {
+		return err
+	}
+	return b.nc.Flush()
 }
 
 // OnKeyRevoked calls fn for every key_revoked event, from any node (this one included).

@@ -44,6 +44,9 @@ type Catalog struct {
 	Mode string `yaml:"mode"`
 	// WatchInterval is how often file mode checks the file for changes; default 5s.
 	WatchInterval time.Duration `yaml:"watch_interval"`
+	// PollInterval is how often a node checks the database revision, in case a
+	// catalog_changed event was missed; default 30s (spec-0006 section 5.3).
+	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
 // Catalog modes.
@@ -374,6 +377,9 @@ func (c *Config) applyDefaults() {
 	if c.Catalog.WatchInterval == 0 {
 		c.Catalog.WatchInterval = 5 * time.Second
 	}
+	if c.Catalog.PollInterval == 0 {
+		c.Catalog.PollInterval = 30 * time.Second
+	}
 	if c.Metrics.Listen == "" {
 		c.Metrics.Listen = "off"
 	}
@@ -458,8 +464,8 @@ func (c *Config) validate() error {
 	if m := c.Catalog.Mode; m != CatalogDatabase && m != CatalogFile {
 		return fmt.Errorf("catalog.mode %q: use database or file", m)
 	}
-	if c.Catalog.WatchInterval < 100*time.Millisecond {
-		return fmt.Errorf("catalog.watch_interval must be at least 100ms")
+	if c.Catalog.WatchInterval < 100*time.Millisecond || c.Catalog.PollInterval < 100*time.Millisecond {
+		return fmt.Errorf("catalog.watch_interval and catalog.poll_interval must be at least 100ms")
 	}
 	if err := validFormats("nats.hooks.pre_request.formats", c.NATS.Hooks.PreRequest.Formats); err != nil {
 		return err

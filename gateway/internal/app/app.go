@@ -47,17 +47,7 @@ type App struct {
 // New builds one gateway node. The caller owns st and nb and closes them after Close.
 // It also creates the first admin account from admin.bootstrap when none exists.
 func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, log *slog.Logger) (*App, error) {
-	file, err := catalog.FromFile(cfg)
-	if err != nil {
-		return nil, err
-	}
-	cm, err := catalog.Start(ctx, catalog.Options{Store: st, Client: provider.NewHTTPClient(), Log: log,
-		Mode: cfg.Catalog.Mode, File: file, Path: cfg.Path, WatchInterval: cfg.Catalog.WatchInterval})
-	if err != nil {
-		return nil, err
-	}
-	a := &App{Catalog: cm.Holder(), Catalogs: cm, Keys: keys.NewService(st),
-		Auth: auth.NewService(st, cfg.Admin.SessionTTL, log), Bus: nb}
+	a := &App{Keys: keys.NewService(st), Auth: auth.NewService(st, cfg.Admin.SessionTTL, log), Bus: nb}
 
 	// Key revocation reaches every node through NATS.
 	if err := nb.OnKeyRevoked(a.Keys.Forget); err != nil {
@@ -81,7 +71,30 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		return nil
 	}
 	a.Metrics = metrics.New(Version, metrics.Checks{NATS: nb.Status, Database: dbCheck,
-		Dropped: func() int64 { return a.Recorder.Dropped() }})
+		Dropped: func() int64 { return a.Recorder.Dropped() },
+		Catalog: func() (int64, time.Time) {
+			s := a.Catalog.Snapshot()
+			return s.Revision, s.LoadedAt
+		}})
+
+	// The catalog: seed or sync, then load (spec-0006 section 6).
+	file, err := catalog.FromFile(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cm, err := catalog.Start(ctx, catalog.Options{Store: st, Client: provider.NewHTTPClient(), Log: log,
+		Mode: cfg.Catalog.Mode, File: file, Path: cfg.Path, WatchInterval: cfg.Catalog.WatchInterval,
+		PollInterval: cfg.Catalog.PollInterval, Publish: nb.PublishCatalogChanged, Observer: a.Metrics})
+	if err != nil {
+		return nil, err
+	}
+	a.Catalog, a.Catalogs = cm.Holder(), cm
+	if err := nb.OnCatalogChanged(func(rev int64) { cm.Changed(rev, "event") }); err != nil {
+		return nil, fmt.Errorf("subscribe to control events: %w", err)
+	}
+	nb.OnReconnect(func() { cm.Changed(0, "reconnect") })
+	cm.Changed(0, "start") // a change between the first load and the subscription
+
 	a.Recorder = metering.NewRecorder(cfg.Metering, log, a.Metrics, metering.StoreSink{Store: st}, nb.UsageSink())
 
 	var preHook hook.Hook

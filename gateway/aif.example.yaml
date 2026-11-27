@@ -77,7 +77,8 @@ nats:
 # (stored as env:NAME), env:NAME or file:/run/secrets/key. A key value written here is refused.
 catalog:
   mode: ${AIF_CATALOG_MODE:-database}
-  watch_interval: 5s
+  watch_interval: 5s            # file mode: how often the file is checked
+  poll_interval: 30s            # how often each node checks the revision, in case an event was lost
 
 # Allow "<provider>/<upstream model>" for any model, e.g. "openrouter/anthropic/claude-sonnet-4.5".
 passthrough: true

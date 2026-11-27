@@ -10,6 +10,7 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 1. Catalog in the database (spec-0006, tasks 0015-0016): migration v4 adds the catalog tables, a revision and an audit table. Nodes serve an immutable catalog snapshot swapped atomically; a request keeps the snapshot it started with.
 2. `catalog.mode`: `database` (default; the file seeds an empty database once) or `file` (the file is the source of truth, applied on change and on SIGHUP without a restart).
+3. Hot reload across nodes (task-0017): new control event `aif.control.v1.catalog_changed` `{type, revision, node, at}`, a revision poll (`catalog.poll_interval`, 30s), and metrics `aif_catalog_revision`, `aif_catalog_reloads_total`, `aif_catalog_last_reload_seconds`.
 
 ### Changed
 
