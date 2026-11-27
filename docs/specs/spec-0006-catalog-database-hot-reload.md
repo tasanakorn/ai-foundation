@@ -30,7 +30,8 @@ New setting `catalog.mode`:
 
 1. `database` is for teams that manage models in the UI or API.
 2. `file` is for GitOps: a reviewed commit changes the file, and the gateway applies it. The database still holds a copy, so the admin UI can show it and every node reads the same thing.
-3. Seeding works like `admin.bootstrap`: safe when several nodes start at once (one transaction, under an advisory lock).
+3. Seeding works like `admin.bootstrap`: safe when several nodes start at once. It writes only at revision 0, in one transaction with a revision check, so exactly one node seeds.
+4. Keys in the file: `api_key: ${NAME}` is stored as `env:NAME`; `env:NAME` and `file:/path` are stored as written. A key value written in the file is refused, because keys are never stored in the database (section 4.4).
 
 ## 4. Storage
 
@@ -57,7 +58,7 @@ New setting `catalog.mode`:
    1. The writer publishes `aif.control.v1.catalog_changed` with `{"revision": N}` after the commit. This is a new subject on the existing control prefix, so it is additive (spec-0001 section 8.1).
    2. Every node also polls `catalog_meta.revision` every 30s (`catalog.poll_interval`), and once after a NATS reconnect, so a missed event costs at most one poll interval.
    3. A node loads the new catalog only when its revision is higher than the one it has.
-4. File mode: the node watches `aif.yaml` (it checks the file's change time and content hash every 5s) and on SIGHUP. When the catalog part changed, the node with the advisory lock writes it to the database, and the event in 5.3 tells the others. A file that fails validation is logged and ignored; the last good catalog stays.
+4. File mode: the node watches `aif.yaml` (it checks the file's change time and content hash every 5s, `catalog.watch_interval`) and on SIGHUP. When the catalog differs from the database, the node writes it with a revision check (the first node wins; the others then see equal content and write nothing), and the event in 5.3 tells the others. In database mode, SIGHUP reloads from the database. A file that fails validation is logged and ignored; the last good catalog stays.
 5. A reload that fails (database down, a reference that does not resolve) keeps the last good snapshot, logs an error and sets the metric in section 7. The node retries at the next poll.
 6. State carries over: account cooldowns and round-robin positions (spec-0004 section 4.4) move to the new snapshot by provider and account name. Renamed or removed accounts start fresh.
 

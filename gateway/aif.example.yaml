@@ -67,6 +67,18 @@ nats:
       models: ["*"]                # key allow-list patterns
       formats: [openai]            # add anthropic to also check /anthropic requests (body = Anthropic format)
 
+# The catalog (passthrough, providers, models) lives in PostgreSQL (docs/specs/spec-0006).
+#   database (default): this file seeds an empty database once; later starts ignore the
+#                       catalog below and the database is the source of truth.
+#   file:               this file is the source of truth (GitOps). It is written to the
+#                       database at start, when it changes (checked every watch_interval)
+#                       and on SIGHUP. An invalid file is logged and the last good catalog stays.
+# Provider keys are stored as references, never as values: write api_key as ${NAME}
+# (stored as env:NAME), env:NAME or file:/run/secrets/key. A key value written here is refused.
+catalog:
+  mode: ${AIF_CATALOG_MODE:-database}
+  watch_interval: 5s
+
 # Allow "<provider>/<upstream model>" for any model, e.g. "openrouter/anthropic/claude-sonnet-4.5".
 passthrough: true
 

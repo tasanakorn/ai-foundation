@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,12 @@ import (
 	"ai-foundation/gateway/internal/store/postgres"
 )
 
-func TestMain(m *testing.M) { pgtest.Main(m) }
+// Provider keys are references (spec-0006): the test configs read them from these variables.
+func TestMain(m *testing.M) {
+	os.Setenv("AIF_TEST_UPSTREAM_KEY", "upstream-secret")
+	os.Setenv("AIF_TEST_ANTH_KEY", "anth-secret")
+	pgtest.Main(m)
+}
 
 const (
 	masterKey    = "test-master-key-123456"
@@ -115,7 +121,7 @@ metering: { flush_interval: 10ms }
 nats: { url: ` + e.natsURL + ` }
 passthrough: true
 providers:
-  - { name: fake, base_url: ` + e.upURL + `/v1, api_key: upstream-secret }
+  - { name: fake, base_url: ` + e.upURL + `/v1, api_key: ${AIF_TEST_UPSTREAM_KEY} }
 models:
   - { name: small, provider: fake, upstream: vendor/small-v1, price: { input: 1, output: 2, cached_input: 0.5 } }
   - { name: broken, provider: fake }

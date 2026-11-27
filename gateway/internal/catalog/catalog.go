@@ -7,7 +7,9 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,8 +30,8 @@ const DefaultAccount = "default"
 
 // Snapshot is one immutable catalog: never changed after Build.
 type Snapshot struct {
-	Revision int64          // 0 = built from the file, not from the database
-	Catalog  *store.Catalog // as stored (keys are references); nil when built from the file
+	Revision int64          // 0 = the empty catalog of a database never written
+	Catalog  *store.Catalog // as stored (keys are references)
 	Router   *router.Router
 	LoadedAt time.Time
 }
@@ -68,13 +70,70 @@ func (h *Holder) Offer(s *Snapshot) bool {
 	}
 }
 
-// FromConfig builds a snapshot from the catalog part of the file (revision 0).
-func FromConfig(cfg *config.Config, client *http.Client) (*Snapshot, error) {
-	providers, err := provider.Build(cfg.Providers, client)
-	if err != nil {
-		return nil, err
+// FromFile turns the catalog part of the file into the stored form. A provider key
+// must be a reference: ${NAME} in the file becomes env:NAME, and env:NAME or file:/path
+// stay as written. A key value written in the file is refused, because keys are never
+// stored in the database (spec-0006 D38).
+func FromFile(cfg *config.Config) (*store.Catalog, error) {
+	c := &store.Catalog{Passthrough: cfg.Passthrough, Providers: []store.CatalogProvider{}, Models: []store.CatalogModel{}}
+	for _, p := range cfg.Providers {
+		ref := p.KeyRef
+		if ref == "" && p.APIKey != "" {
+			return nil, &InvalidError{fmt.Errorf("provider %q: api_key is a value written in the file; put the key in an environment variable and write ${NAME}, or use env:NAME or file:/path (keys are never stored in the database)", p.Name)}
+		}
+		headers := copyMap(p.Headers)
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		c.Providers = append(c.Providers, store.CatalogProvider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: headers,
+			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat,
+			Accounts: []store.CatalogAccount{{Name: DefaultAccount, KeyRef: ref}}})
 	}
-	return &Snapshot{Router: router.New(cfg.Models, providers, cfg.Passthrough), LoadedAt: time.Now()}, nil
+	for _, m := range cfg.Models {
+		t := store.CatalogTarget{Provider: m.Provider, Upstream: m.Upstream}
+		if m.Price != nil {
+			pr := store.Price(*m.Price)
+			t.Price = &pr
+		}
+		c.Models = append(c.Models, store.CatalogModel{Name: m.Name, Formats: append([]string{}, m.Formats...), Targets: []store.CatalogTarget{t}})
+	}
+	return c, Validate(c)
+}
+
+// SameContent reports whether a and b hold the same catalog, ignoring revision and
+// who changed it last. Nil and empty lists and maps count as equal.
+func SameContent(a, b *store.Catalog) bool {
+	ja, _ := json.Marshal(canon(a))
+	jb, _ := json.Marshal(canon(b))
+	return bytes.Equal(ja, jb)
+}
+
+func canon(c *store.Catalog) store.Catalog {
+	out := store.Catalog{Passthrough: c.Passthrough, Providers: []store.CatalogProvider{}, Models: []store.CatalogModel{}}
+	for _, p := range c.Providers {
+		if p.Headers == nil {
+			p.Headers = map[string]string{}
+		}
+		if p.Accounts == nil {
+			p.Accounts = []store.CatalogAccount{}
+		}
+		out.Providers = append(out.Providers, p)
+	}
+	for _, m := range c.Models {
+		if m.Formats == nil {
+			m.Formats = []string{}
+		}
+		if m.Targets == nil {
+			m.Targets = []store.CatalogTarget{}
+		}
+		out.Models = append(out.Models, m)
+	}
+	return out
+}
+
+// Describe is a short summary for logs and the change history.
+func Describe(c *store.Catalog) string {
+	return fmt.Sprintf("%d providers, %d models", len(c.Providers), len(c.Models))
 }
 
 // Load reads the catalog from the database and builds a snapshot.

@@ -29,9 +29,28 @@ type Config struct {
 	Models      []Model    `yaml:"models"`
 	Passthrough bool       `yaml:"passthrough"`
 	Metrics     Metrics    `yaml:"metrics"`
+	Catalog     Catalog    `yaml:"catalog"`
 	// DevMode allows the known dev secrets (spec-0003 D23). Only aif.dev.yaml sets it.
 	DevMode bool `yaml:"dev_mode"`
+
+	// Path is the file Load read ("" for Parse). File mode watches it (spec-0006 section 5.4).
+	Path string `yaml:"-"`
 }
+
+// Catalog says where providers and models come from (spec-0006 section 3).
+type Catalog struct {
+	// Mode: database (default; the file seeds an empty database once) or file (the file
+	// is the source of truth and is written to the database at start and on change).
+	Mode string `yaml:"mode"`
+	// WatchInterval is how often file mode checks the file for changes; default 5s.
+	WatchInterval time.Duration `yaml:"watch_interval"`
+}
+
+// Catalog modes.
+const (
+	CatalogDatabase = "database"
+	CatalogFile     = "file"
+)
 
 // Metrics is the Prometheus endpoint on its own listener (spec-0003 D22). Default "off".
 type Metrics struct {
@@ -169,10 +188,14 @@ type Hook struct {
 func (h Hook) Enabled() bool { return h.Subject != "" }
 
 type Provider struct {
-	Name    string            `yaml:"name"`
-	Type    string            `yaml:"type"` // openai (default), openrouter, anthropic
-	BaseURL string            `yaml:"base_url"`
-	APIKey  string            `yaml:"api_key"`
+	Name    string `yaml:"name"`
+	Type    string `yaml:"type"` // openai (default), openrouter, anthropic
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	// KeyRef is where the key comes from, for the database catalog (spec-0006 section 4.4):
+	// "env:NAME" when api_key was ${NAME}, or api_key itself when written as env:NAME or
+	// file:/path. Parse sets it; "" with a non-empty APIKey means a key value in the file.
+	KeyRef  string            `yaml:"-"`
 	Headers map[string]string `yaml:"headers"`
 
 	// Anthropic only (spec-0002 section 5).
@@ -229,13 +252,30 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	return Parse(raw)
+	cfg, err := Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Path = path
+	return cfg, nil
 }
 
 func Parse(raw []byte) (*Config, error) {
 	var cfg Config
-	if err := yaml.Unmarshal([]byte(ExpandEnv(string(raw))), &cfg); err != nil {
+	expanded, fromEnv := expandEnv(string(raw))
+	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		switch {
+		case strings.HasPrefix(p.APIKey, "env:") || strings.HasPrefix(p.APIKey, "file:"):
+			p.KeyRef, p.APIKey = p.APIKey, ""
+		case p.APIKey != "":
+			if name, ok := fromEnv[p.APIKey]; ok {
+				p.KeyRef = "env:" + name
+			}
+		}
 	}
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
@@ -248,13 +288,25 @@ var envPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\
 
 // ExpandEnv replaces ${VAR} and ${VAR:-default}. A bare $VAR is left as is.
 func ExpandEnv(s string) string {
-	return envPattern.ReplaceAllStringFunc(s, func(m string) string {
+	out, _ := expandEnv(s)
+	return out
+}
+
+// expandEnv also returns, for each value taken from the environment, the variable it
+// came from. A default (${VAR:-x}) is not from the environment.
+func expandEnv(s string) (string, map[string]string) {
+	fromEnv := map[string]string{}
+	out := envPattern.ReplaceAllStringFunc(s, func(m string) string {
 		parts := envPattern.FindStringSubmatch(m)
 		if v, ok := os.LookupEnv(parts[1]); ok && v != "" {
+			if _, seen := fromEnv[v]; !seen {
+				fromEnv[v] = parts[1]
+			}
 			return v
 		}
 		return parts[2]
 	})
+	return out, fromEnv
 }
 
 func (c *Config) applyDefaults() {
@@ -315,6 +367,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Server.ClientIPHeader == "" {
 		c.Server.ClientIPHeader = clientip.DefaultHeader
+	}
+	if c.Catalog.Mode == "" {
+		c.Catalog.Mode = CatalogDatabase
+	}
+	if c.Catalog.WatchInterval == 0 {
+		c.Catalog.WatchInterval = 5 * time.Second
 	}
 	if c.Metrics.Listen == "" {
 		c.Metrics.Listen = "off"
@@ -396,6 +454,12 @@ func (c *Config) validate() error {
 	}
 	if err := c.validateProduction(); err != nil {
 		return err
+	}
+	if m := c.Catalog.Mode; m != CatalogDatabase && m != CatalogFile {
+		return fmt.Errorf("catalog.mode %q: use database or file", m)
+	}
+	if c.Catalog.WatchInterval < 100*time.Millisecond {
+		return fmt.Errorf("catalog.watch_interval must be at least 100ms")
 	}
 	if err := validFormats("nats.hooks.pre_request.formats", c.NATS.Hooks.PreRequest.Formats); err != nil {
 		return err

@@ -33,6 +33,10 @@ nats:
       subject: aif.hook.pre_request.v1
       fail_open: true          # dev: allow when no extension runs (see extensions/example-budget)
 
+# Dev: the file is the source of truth, so edits here apply without a restart.
+catalog:
+  mode: ${AIF_CATALOG_MODE:-file}
+
 passthrough: true
 
 providers:

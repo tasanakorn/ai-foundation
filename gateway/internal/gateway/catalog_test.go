@@ -18,8 +18,8 @@ import (
 // that request finishes on the provider, upstream name and price it started with, and
 // the next request uses the new catalog. Both catalogs come from PostgreSQL.
 func TestCatalogSwapDuringRequest(t *testing.T) {
-	t.Setenv("AIF_SWAP_TEST_KEY", "upstream-secret") // key reference of the new catalog
-	e := newEnv(t)
+	t.Parallel()
+	e := newEnv(t) // revision 1: seeded from the test config
 	secret, _ := e.createKey(`{"name":"swap"}`)
 	ctx := context.Background()
 
@@ -61,11 +61,11 @@ func TestCatalogSwapDuringRequest(t *testing.T) {
 	<-arrived
 
 	load(&store.Catalog{
-		Providers: []store.CatalogProvider{{Name: "fake", Type: "openai", BaseURL: e.upURL + "/v1", Accounts: acct("env:AIF_SWAP_TEST_KEY")}},
+		Providers: []store.CatalogProvider{{Name: "fake", Type: "openai", BaseURL: e.upURL + "/v1", Accounts: acct("env:AIF_TEST_UPSTREAM_KEY")}},
 		Models: []store.CatalogModel{{Name: "small", Targets: []store.CatalogTarget{
 			{Provider: "fake", Upstream: "new-up", Price: &store.Price{Input: 10, Output: 10, CachedInput: 10}}}}},
 	})
-	if e.app.Catalog.Revision() != 2 {
+	if e.app.Catalog.Revision() != 3 {
 		t.Fatalf("serving revision %d", e.app.Catalog.Revision())
 	}
 	if code, out := e.do(e.gw.URL, "POST", "/v1/chat/completions", secret, body); code != 200 {

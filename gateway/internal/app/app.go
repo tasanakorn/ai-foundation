@@ -29,7 +29,8 @@ import (
 var Version = "dev"
 
 type App struct {
-	Catalog  *catalog.Holder // the catalog snapshot this node serves (spec-0006)
+	Catalog  *catalog.Holder  // the catalog snapshot this node serves (spec-0006)
+	Catalogs *catalog.Manager // keeps Catalog up to date
 	Keys     *keys.Service
 	Auth     *auth.Service
 	Recorder *metering.Recorder
@@ -39,16 +40,23 @@ type App struct {
 	Public    http.Handler // OpenAI API (/v1, /openai/v1) and Anthropic API (/anthropic)
 	Anthropic http.Handler // Anthropic API at the root, for server.anthropic.listen
 	Admin     http.Handler // nil when admin.listen is off
+
+	stop context.CancelFunc // ends the background work started by New
 }
 
 // New builds one gateway node. The caller owns st and nb and closes them after Close.
 // It also creates the first admin account from admin.bootstrap when none exists.
 func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, log *slog.Logger) (*App, error) {
-	snap, err := catalog.FromConfig(cfg, provider.NewHTTPClient())
+	file, err := catalog.FromFile(cfg)
 	if err != nil {
 		return nil, err
 	}
-	a := &App{Catalog: catalog.NewHolder(snap), Keys: keys.NewService(st),
+	cm, err := catalog.Start(ctx, catalog.Options{Store: st, Client: provider.NewHTTPClient(), Log: log,
+		Mode: cfg.Catalog.Mode, File: file, Path: cfg.Path, WatchInterval: cfg.Catalog.WatchInterval})
+	if err != nil {
+		return nil, err
+	}
+	a := &App{Catalog: cm.Holder(), Catalogs: cm, Keys: keys.NewService(st),
 		Auth: auth.NewService(st, cfg.Admin.SessionTTL, log), Bus: nb}
 
 	// Key revocation reaches every node through NATS.
@@ -106,11 +114,18 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir,
 			ClientIP: ips, Log: log}).Routes()
 	}
+	runCtx, stop := context.WithCancel(context.Background())
+	a.stop = stop
+	go cm.Run(runCtx)
 	return a, nil
 }
 
-// Close flushes buffered usage to every sink. Call it after the HTTP servers stop.
-func (a *App) Close(ctx context.Context) error { return a.Recorder.Close(ctx) }
+// Close stops the background work and flushes buffered usage to every sink.
+// Call it after the HTTP servers stop.
+func (a *App) Close(ctx context.Context) error {
+	a.stop()
+	return a.Recorder.Close(ctx)
+}
 
 func (a *App) bootstrapAdmin(ctx context.Context, c config.Admin, log *slog.Logger) error {
 	created, err := a.Auth.Bootstrap(ctx, c.Bootstrap)

@@ -131,6 +131,15 @@ func run(cfgPath string, log *slog.Logger) error {
 			}
 		}()
 	}
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP) // reload the catalog (spec-0006 section 5.4)
+	defer signal.Stop(hup)
+	go func() {
+		for range hup {
+			log.Info("SIGHUP: reloading the catalog")
+			a.Catalogs.Trigger()
+		}
+	}()
 	log.Info("aif started", "version", version, "node", nb.NodeID, "providers", a.Catalog.Router().Providers(), "models", len(a.Catalog.Router().Models()))
 
 	select {

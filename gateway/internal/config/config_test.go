@@ -123,6 +123,8 @@ func TestValidate(t *testing.T) {
 	}
 	cases := map[string]string{
 		"no database url":            `providers: []`,
+		"catalog mode":               db + "catalog: {mode: git}",
+		"catalog watch":              db + "catalog: {watch_interval: 1ms}",
 		"sqlite driver":              "database: {url: \"postgres://x\", driver: sqlite}",
 		"old dsn":                    "database: {url: \"postgres://x\", dsn: aif.db}",
 		"pool sizes":                 "database: {url: \"postgres://x\", max_conns: 2, min_conns: 3}",
@@ -201,5 +203,32 @@ database: {url: "postgres://x"}
 admin: {master_key: dev-master-key-0000, bootstrap: {email: a@b.c, password: dev-admin-password}}
 `)); err != nil {
 		t.Fatalf("dev_mode: %v", err)
+	}
+}
+
+func TestCatalogSettingsAndKeyRefs(t *testing.T) {
+	t.Setenv("AIF_TEST_KEY", "sk-from-env")
+	cfg, err := Parse([]byte(`
+database: {url: "postgres://x"}
+providers:
+  - {name: a, base_url: http://a, api_key: "${AIF_TEST_KEY}"}
+  - {name: b, base_url: http://b, api_key: "env:B_KEY"}
+  - {name: c, base_url: http://c, api_key: literal}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Catalog.Mode != CatalogDatabase || cfg.Catalog.WatchInterval != 5*time.Second {
+		t.Fatalf("catalog defaults: %+v", cfg.Catalog)
+	}
+	p := cfg.Providers
+	if p[0].KeyRef != "env:AIF_TEST_KEY" || p[0].APIKey != "sk-from-env" {
+		t.Errorf("from ${}: ref %q", p[0].KeyRef)
+	}
+	if p[1].KeyRef != "env:B_KEY" || p[1].APIKey != "" {
+		t.Errorf("written reference: ref %q key %q", p[1].KeyRef, p[1].APIKey)
+	}
+	if p[2].KeyRef != "" || p[2].APIKey != "literal" {
+		t.Errorf("literal: ref %q", p[2].KeyRef)
 	}
 }

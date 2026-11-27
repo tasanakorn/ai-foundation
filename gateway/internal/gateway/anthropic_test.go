@@ -104,7 +104,7 @@ func newFakeAnthropic(t *testing.T) *fakeAnthropic {
 func withAnthropic(f *fakeAnthropic) func(*config.Config) {
 	return func(c *config.Config) {
 		c.Providers = append(c.Providers, config.Provider{Name: "claude", Type: config.TypeAnthropic,
-			BaseURL: f.srv.URL + "/v1", APIKey: "anth-secret", OpenAIFormat: config.OpenAIFormatCompat})
+			BaseURL: f.srv.URL + "/v1", KeyRef: "env:AIF_TEST_ANTH_KEY", OpenAIFormat: config.OpenAIFormatCompat})
 		c.Models = append(c.Models,
 			config.Model{Name: "sonnet", Provider: "claude", Upstream: "claude-up-1", Price: &config.Price{Input: 2, Output: 10, CachedInput: 0.2}},
 			config.Model{Name: "claude-rate", Provider: "claude", Upstream: "claude-rate"},

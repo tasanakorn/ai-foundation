@@ -8,7 +8,13 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ### Added
 
-1. Catalog in the database (spec-0006, task-0015): migration v4 adds the catalog tables, a revision and an audit table. Nodes serve an immutable catalog snapshot swapped atomically; a request keeps the snapshot it started with. Not used at startup yet: the file still provides the catalog until task-0016.
+1. Catalog in the database (spec-0006, tasks 0015-0016): migration v4 adds the catalog tables, a revision and an audit table. Nodes serve an immutable catalog snapshot swapped atomically; a request keeps the snapshot it started with.
+2. `catalog.mode`: `database` (default; the file seeds an empty database once) or `file` (the file is the source of truth, applied on change and on SIGHUP without a restart).
+
+### Changed
+
+1. Provider keys in the config file must be references: `${NAME}`, `env:NAME` or `file:/path`. A key value written in the file is refused at startup.
+2. In database mode (the default), edits to `providers`, `models` and `passthrough` in the file have no effect after the first start. Use `catalog.mode: file` to keep managing them in the file.
 
 ## [0.1.0] - 2026-11-27
 
