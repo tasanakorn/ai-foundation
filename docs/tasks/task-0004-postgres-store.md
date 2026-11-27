@@ -3,7 +3,7 @@
 - Status: done
 - Spec: [spec-0001](../specs/spec-0001-gateway-core-architecture.md) §4.2, D12, D15
 - Backlog: [backlog-0002](../backlogs/backlog-0002-postgres-store.md)
-- Change: [change-0005](../change/change-0005-postgres-required-sqlite-removed.md)
+- Change: [change-0005](../changes/change-0005-postgres-required-sqlite-removed.md)
 - Done when: the gateway runs on PostgreSQL only, all tests pass on a real Postgres without Docker, and two gateway nodes share keys, usage and admin sessions through one database.
 
 ## 1. Scope

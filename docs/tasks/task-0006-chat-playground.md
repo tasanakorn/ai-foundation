@@ -2,7 +2,7 @@
 
 - Status: done
 - Spec: [spec-0001](../specs/spec-0001-gateway-core-architecture.md) §6, §6.2
-- Change: [change-0007](../change/change-0007-chat-playground.md)
+- Change: [change-0007](../changes/change-0007-chat-playground.md)
 - Done when: a signed-in person can chat through the gateway from the admin UI with a real API key, see streaming replies, and see what was metered.
 
 ## 1. Scope

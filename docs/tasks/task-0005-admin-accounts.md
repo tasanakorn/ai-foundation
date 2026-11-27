@@ -2,7 +2,7 @@
 
 - Status: done
 - Spec: [spec-0001](../specs/spec-0001-gateway-core-architecture.md) §6, §6.1, D16
-- Change: [change-0006](../change/change-0006-admin-accounts-and-sessions.md)
+- Change: [change-0006](../changes/change-0006-admin-accounts-and-sessions.md)
 - Done when: a fresh install can create its first admin, people sign in to the web UI with email + password, admins manage other admins, viewers can only read, and the master key is optional.
 
 ## 1. Scope

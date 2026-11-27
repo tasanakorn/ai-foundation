@@ -5,7 +5,7 @@ A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI ag
 ## 1. What it is
 
 1. A minimal core of what LiteLLM and OpenRouter do, in one small Go binary.
-2. One OpenAI-compatible API in front of many LLM providers.
+2. One OpenAI-compatible API in front of many LLM providers, plus an Anthropic-compatible API (`/anthropic`) for coding agents and Anthropic SDK apps.
 3. A base to build custom systems on (multi-tenant SaaS, internal AI platform, per-app billing).
 
 ## 2. Goals
@@ -15,6 +15,7 @@ A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI ag
 2. **Connectivity.** Reach the major LLMs through:
    1. OpenRouter (hundreds of models with one key).
    2. Any direct OpenAI-compatible API (OpenAI, Groq, Together, vLLM, Ollama, LM Studio, …).
+   3. Anthropic directly, including the monthly API credits of Claude Max, Ultra and Team plans.
 3. **Metering.** Count tokens and cost for every request, including streams.
 4. **API keys.** Simple keys that are easy to map to tenants, apps, and end users.
 5. **Built-in admin.** Own admin accounts (email + password, roles), so the gateway works without any outside identity system. Outside logins ("login with …") can be added later. Admin API on localhost by default, switchable to public. Web UI in Vue/Nuxt.
@@ -29,13 +30,14 @@ A lightweight LLM gateway. It is the shared base layer for AI chatbots and AI ag
 
 ## 4. Personas
 
-| Persona          | Needs                                                            |
-| ---------------- | ---------------------------------------------------------------- |
-| App developer    | One endpoint and one key. Works with the OpenAI SDK.             |
-| Platform builder | Admin API to create keys per tenant/app. Usage data for billing. |
-| Operator         | Small footprint, one config file, easy deploy, clear logs.       |
+| Persona           | Needs                                                                              |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| App developer     | One endpoint and one key. Works with the OpenAI SDK.                               |
+| Platform builder  | Admin API to create keys per tenant/app. Usage data for billing.                   |
+| Operator          | Small footprint, one config file, easy deploy, clear logs.                         |
+| Coding agent user | Point Claude Code or an Anthropic SDK app at the gateway with one URL and one key. |
 
 ## 5. Docs
 
-1. Architecture: [spec-0001](../specs/spec-0001-gateway-core-architecture.md).
+1. Architecture: [spec-0001](../specs/spec-0001-gateway-core-architecture.md). Anthropic API and plan credits: [spec-0002](../specs/spec-0002-anthropic-api-and-credits.md) (draft).
 2. Work: [tasks index](../tasks/INDEX.md). Ideas: [backlog index](../backlogs/INDEX.md).

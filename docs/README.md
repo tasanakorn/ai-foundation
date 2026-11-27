@@ -7,7 +7,7 @@ All project documentation. Each folder has its own `README.md` with its rules.
 | Folder                     | Purpose                                 | Kind      |
 | -------------------------- | --------------------------------------- | --------- |
 | [`products/`](products/)   | Product overviews, goals, personas      | —         |
-| [`change/`](change/)       | Change records: what changed and why    | `change`  |
+| [`changes/`](changes/)     | Change records: what changed and why    | `change`  |
 | [`specs/`](specs/)         | Technical and functional specs          | `spec`    |
 | [`tasks/`](tasks/)         | Concrete, scoped units of work          | `task`    |
 | [`backlogs/`](backlogs/)   | Ideas and requests not yet scheduled    | `backlog` |
@@ -29,7 +29,7 @@ All project documentation. Each folder has its own `README.md` with its rules.
 | Path                                          | Why                         |
 | --------------------------------------------- | --------------------------- |
 | `products/ai-gateway.md`                      | Product doc, slug only      |
-| `change/change-0001-move-to-k8s.md`           | First change record         |
+| `changes/change-0001-move-to-k8s.md`          | First change record         |
 | `specs/spec-0004-model-routing.md`            | Fourth spec                 |
 | `tasks/task-0012-add-gpu-node-pool.md`        | Twelfth task                |
 | `backlogs/backlog-0007-cost-dashboard.md`     | Backlog uses kind `backlog` |
@@ -39,4 +39,4 @@ All project documentation. Each folder has its own `README.md` with its rules.
 1. Idea → `backlogs/backlog-<nnnn>-*`.
 2. Accepted idea → `specs/spec-<nnnn>-*` (links back to the backlog item).
 3. Spec split into work → `tasks/task-<nnnn>-*` (each links to its spec).
-4. Shipped change → `change/change-<nnnn>-*` (links to its spec and tasks).
+4. Shipped change → `changes/change-<nnnn>-*` (links to its spec and tasks).

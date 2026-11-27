@@ -2,7 +2,7 @@
 
 - Status: done
 - Spec: [spec-0001](../specs/spec-0001-gateway-core-architecture.md) §8, §8.1, §8.2, D13, D14
-- Change: [change-0004](../change/change-0004-nats-required-events-and-hooks.md)
+- Change: [change-0004](../changes/change-0004-nats-required-events-and-hooks.md)
 - Done when: an extension in any language, connected only to NATS, can (a) receive every usage record, (b) allow, deny, or modify a request before it goes upstream, and (c) a key revoked on one gateway node stops working on all nodes within 1 s.
 
 ## 1. Scope

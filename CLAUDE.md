@@ -10,7 +10,7 @@ Guidance for Claude Code in this repository.
    | Folder           | Holds                                 | Kind      | Name pattern                  |
    | ---------------- | ------------------------------------- | --------- | ----------------------------- |
    | `docs/products/` | Product overviews, goals, personas    | —         | `<slug>.<ext>`                |
-   | `docs/change/`   | Change records (what changed and why) | `change`  | `change-<nnnn>-<slug>.<ext>`  |
+   | `docs/changes/`  | Change records (what changed and why) | `change`  | `change-<nnnn>-<slug>.<ext>`  |
    | `docs/specs/`    | Technical / functional specs          | `spec`    | `spec-<nnnn>-<slug>.<ext>`    |
    | `docs/tasks/`    | Concrete, scoped units of work        | `task`    | `task-<nnnn>-<slug>.<ext>`    |
    | `docs/backlogs/` | Ideas and requests not yet scheduled  | `backlog` | `backlog-<nnnn>-<slug>.<ext>` |
