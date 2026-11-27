@@ -61,14 +61,14 @@ func TestImportKeepsEncryptedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "Encrypted keys are not exported (providers: [local])") || strings.Contains(string(out), "WXYZ") {
+	if !strings.Contains(string(out), "Encrypted keys are not exported (accounts: [local/default])") || strings.Contains(string(out), "WXYZ") {
 		t.Fatalf("export of an encrypted key:\n%s", out)
 	}
 	next, err := catalog.ParseImport(out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kept := catalog.KeepEncryptedKeys(cur, next); len(kept) != 1 || kept[0] != "local" {
+	if kept := catalog.KeepEncryptedKeys(cur, next); len(kept) != 1 || kept[0] != "local/default" {
 		t.Fatalf("kept %v", kept)
 	}
 	if !catalog.SameContent(cur, next) {
@@ -89,5 +89,50 @@ func TestImportRefusesKeyValues(t *testing.T) {
 	_, err = catalog.ParseImport([]byte("models:\n  - { name: m, provider: missing }\n"))
 	if err == nil {
 		t.Fatal("invalid catalog imported")
+	}
+}
+
+func TestExportImportAccounts(t *testing.T) {
+	t.Setenv("AIF_CATALOG_TEST_KEY", "sk-test")
+	src, err := catalog.FromFile(parse(t, `
+database: { url: "postgres://unused" }
+providers:
+  - name: claude
+    type: anthropic
+    openai_format: compat
+    policy: round_robin
+    sticky: session
+    max_attempts: 2
+    cooldown: 45s
+    headers: { X-Team: core }
+    accounts:
+      - { name: plan-a, api_key: "${AIF_CATALOG_TEST_KEY}", weight: 3 }
+      - { name: plan-b, api_key: file:/run/secrets/b, weight: 1, workspace_id: wrk_b, headers: { X-Extra: "1" } }
+      - { name: old, api_key: env:OLD_KEY, weight: 0, base_url: https://other.example/v1 }
+models:
+  - { name: sonnet, provider: claude }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := src.Providers[0]
+	if len(p.Accounts) != 3 || p.Accounts[0].KeyRef != "env:AIF_CATALOG_TEST_KEY" || *p.Accounts[2].Weight != 0 || p.Policy != "round_robin" {
+		t.Fatalf("from file: %+v", p)
+	}
+	out, err := catalog.Export(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"policy: round_robin", "sticky: session", "cooldown: 45s", "accounts:", "name: plan-b", "weight: 0"} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("export misses %q:\n%s", want, out)
+		}
+	}
+	back, err := catalog.ParseImport(out)
+	if err != nil {
+		t.Fatalf("import: %v\n%s", err, out)
+	}
+	if !catalog.SameContent(src, back) {
+		t.Fatalf("round trip changed the catalog:\n%s", out)
 	}
 }

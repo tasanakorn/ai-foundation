@@ -54,6 +54,10 @@ export interface UsageRecord {
   format: ApiFormat
   /** Claude Code session (x-claude-code-session-id), when sent */
   session_id?: string
+  /** Provider account that answered (spec-0004); '' before any upstream call */
+  account: string
+  /** Upstream calls made, failovers included */
+  attempts: number
 }
 
 export type ApiFormat = 'openai' | 'anthropic'
@@ -68,7 +72,7 @@ export interface UsageSummary {
   cost_usd: number
 }
 
-export type GroupBy = 'none' | 'day' | 'model' | 'provider' | 'key' | 'tenant' | 'app' | 'end_user'
+export type GroupBy = 'none' | 'day' | 'model' | 'provider' | 'account' | 'key' | 'tenant' | 'app' | 'end_user'
 
 export interface ModelInfo {
   id: string
@@ -84,6 +88,37 @@ export interface ModelsResponse {
   data: ModelInfo[]
   providers: string[]
   passthrough: boolean
+}
+
+// ---- providers (/admin/v1/providers, spec-0004 section 8) ----
+
+export type AccountPolicy = 'priority' | 'round_robin'
+export type StickyMode = 'none' | 'key' | 'end_user' | 'session'
+
+export interface AccountState {
+  name: string
+  weight: number
+  state: 'ok' | 'cooldown'
+  cooldown_until?: string
+  last_error?: string
+  last_error_at?: string
+}
+
+export interface ProviderState {
+  name: string
+  type: 'openai' | 'openrouter' | 'anthropic'
+  policy: AccountPolicy
+  sticky: StickyMode
+  max_attempts: number
+  /** Go duration, e.g. "30s" */
+  cooldown: string
+  accounts: AccountState[]
+}
+
+/** State is per node: the node that answered is named. */
+export interface ProvidersResponse {
+  node: string
+  data: ProviderState[]
 }
 
 export interface ListResponse<T> {

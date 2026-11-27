@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -50,17 +51,57 @@ func NewHTTPClient() *http.Client {
 	}}
 }
 
-// Build creates providers from config, keyed by name.
-func Build(cfgs []config.Provider, client *http.Client) (map[string]Provider, error) {
+// BuildOptions are shared by every provider Build makes.
+type BuildOptions struct {
+	Client   *http.Client
+	Observer Observer     // optional: counts upstream attempts
+	Log      *slog.Logger // optional: failed attempts
+}
+
+// Build creates one Pool per provider, keyed by name. Each account becomes one client
+// of the provider's type inside the pool (spec-0004 section 9). cfgs must be normalized
+// (config.NormalizeCatalog); a provider without accounts uses its api_key as one account.
+func Build(cfgs []config.Provider, o BuildOptions) (map[string]Provider, error) {
 	out := make(map[string]Provider, len(cfgs))
 	for _, c := range cfgs {
-		switch c.Type {
-		case config.TypeOpenAI, config.TypeOpenRouter:
-			out[c.Name] = NewOpenAI(c, client)
-		case config.TypeAnthropic:
-			out[c.Name] = NewAnthropic(c, client)
-		default:
-			return nil, fmt.Errorf("provider %q: unsupported type %q", c.Name, c.Type)
+		if len(c.Accounts) == 0 { // a hand-built config (tests): api_key is the one account
+			c.Accounts = []config.Account{{Name: config.DefaultAccount, APIKey: c.APIKey}}
+		}
+		members := make([]*member, 0, len(c.Accounts))
+		for _, a := range c.Accounts {
+			ac := c // the account's view: its key, and its overrides on top of the provider
+			ac.APIKey, ac.Accounts = a.APIKey, nil
+			if a.BaseURL != "" {
+				ac.BaseURL = a.BaseURL
+			}
+			if a.WorkspaceID != "" {
+				ac.WorkspaceID = a.WorkspaceID
+			}
+			if len(a.Headers) > 0 {
+				ac.Headers = make(map[string]string, len(c.Headers)+len(a.Headers))
+				for k, v := range c.Headers {
+					ac.Headers[k] = v
+				}
+				for k, v := range a.Headers {
+					ac.Headers[k] = v
+				}
+			}
+			var p Provider
+			switch c.Type {
+			case config.TypeOpenAI, config.TypeOpenRouter:
+				p = NewOpenAI(ac, o.Client)
+			case config.TypeAnthropic:
+				p = NewAnthropic(ac, o.Client)
+			default:
+				return nil, fmt.Errorf("provider %q: unsupported type %q", c.Name, c.Type)
+			}
+			members = append(members, &member{name: a.Name, p: p, weight: a.WeightOr()})
+		}
+		pool := newPool(c, members, o)
+		if c.Type == config.TypeAnthropic {
+			out[c.Name] = &NativePool{pool}
+		} else {
+			out[c.Name] = pool
 		}
 	}
 	return out, nil

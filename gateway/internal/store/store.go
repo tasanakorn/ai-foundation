@@ -76,6 +76,9 @@ type UsageRecord struct {
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
 	Format           string `json:"format"`               // API format the client used: openai or anthropic
 	SessionID        string `json:"session_id,omitempty"` // x-claude-code-session-id, when sent
+	// Added in spec-0004: the provider account that answered, and upstream calls made.
+	Account  string `json:"account"`
+	Attempts int    `json:"attempts"`
 }
 
 type UsageFilter struct {
@@ -87,6 +90,7 @@ type UsageFilter struct {
 	AppID    string
 	EndUser  string
 	Model    string
+	Account  string
 	Limit    int
 	Offset   int
 }
@@ -103,7 +107,7 @@ type UsageSummary struct {
 }
 
 // GroupBy values accepted by SummarizeUsage.
-var GroupBy = []string{"none", "day", "model", "provider", "key", "tenant", "app", "end_user"}
+var GroupBy = []string{"none", "day", "model", "provider", "account", "key", "tenant", "app", "end_user"}
 
 // Admin roles. RoleAdmin can change everything; RoleViewer can only read.
 const (
@@ -161,6 +165,11 @@ type CatalogProvider struct {
 	WorkspaceID  string            `json:"workspace_id"`
 	OpenAIFormat string            `json:"openai_format"`
 	Accounts     []CatalogAccount  `json:"accounts"`
+	// Account selection (spec-0004); empty or zero = the default.
+	Policy      string        `json:"policy"`
+	Sticky      string        `json:"sticky"`
+	MaxAttempts int           `json:"max_attempts"`
+	Cooldown    time.Duration `json:"cooldown"`
 }
 
 // CatalogAccount holds its key as a reference (KeyRef) or encrypted (KeyCipher), never as a value.
@@ -172,6 +181,11 @@ type CatalogAccount struct {
 	KeyCipher []byte `json:"-"`
 	KeyID     string `json:"key_id,omitempty"`
 	KeyHint   string `json:"key_hint,omitempty"`
+	// round_robin weight (nil = default 1) and overrides of the provider's settings.
+	Weight      *int              `json:"weight,omitempty"`
+	BaseURL     string            `json:"base_url,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	WorkspaceID string            `json:"workspace_id,omitempty"`
 }
 
 type CatalogModel struct {

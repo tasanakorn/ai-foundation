@@ -192,6 +192,22 @@ var migrations = []string{
 		ADD COLUMN key_cipher bytea,
 		ADD COLUMN key_id     text NOT NULL DEFAULT '',
 		ADD COLUMN key_hint   text NOT NULL DEFAULT '';`,
+
+	// v6: several accounts per provider (spec-0004): policy, per-account settings,
+	// and the account and attempts of each request.
+	`ALTER TABLE catalog_providers
+		ADD COLUMN policy       text    NOT NULL DEFAULT '',
+		ADD COLUMN sticky       text    NOT NULL DEFAULT '',
+		ADD COLUMN max_attempts integer NOT NULL DEFAULT 0,
+		ADD COLUMN cooldown_ms  bigint  NOT NULL DEFAULT 0;
+	ALTER TABLE catalog_accounts
+		ADD COLUMN weight       integer,
+		ADD COLUMN base_url     text  NOT NULL DEFAULT '',
+		ADD COLUMN headers      jsonb NOT NULL DEFAULT '{}',
+		ADD COLUMN workspace_id text  NOT NULL DEFAULT '';
+	ALTER TABLE usage_records
+		ADD COLUMN account  text    NOT NULL DEFAULT '',
+		ADD COLUMN attempts integer NOT NULL DEFAULT 1;`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start
@@ -312,7 +328,7 @@ func scanKey(row pgx.Row) (*store.Key, error) {
 
 const usageColumns = `id, created_at, key_id, tenant_id, app_id, end_user, endpoint, model, provider, upstream_model,
 	stream, status_code, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
-	cost_usd, estimated, latency_ms, error, cache_write_tokens, format, session_id`
+	cost_usd, estimated, latency_ms, error, cache_write_tokens, format, session_id, account, attempts`
 
 // InsertUsage writes all records in one round trip. Records with a known ID are skipped,
 // so a retried batch never counts a request twice.
@@ -321,14 +337,14 @@ func (s *Store) InsertUsage(ctx context.Context, recs []store.UsageRecord) error
 		return nil
 	}
 	const q = `INSERT INTO usage_records (` + usageColumns + `)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
 		ON CONFLICT (id) DO NOTHING`
 	b := &pgx.Batch{}
 	for _, r := range recs {
 		b.Queue(q, r.ID, r.CreatedAt, r.KeyID, r.TenantID, r.AppID, r.EndUser,
 			r.Endpoint, r.Model, r.Provider, r.UpstreamModel, r.Stream, r.StatusCode,
 			r.PromptTokens, r.CompletionTokens, r.TotalTokens, r.CachedTokens, r.ReasoningTokens,
-			r.CostUSD, r.Estimated, r.LatencyMS, r.Error, r.CacheWriteTokens, r.Format, r.SessionID)
+			r.CostUSD, r.Estimated, r.LatencyMS, r.Error, r.CacheWriteTokens, r.Format, r.SessionID, r.Account, r.Attempts)
 	}
 	// A batch outside a transaction runs as one implicit transaction: all or nothing.
 	return s.pool.SendBatch(ctx, b).Close()
@@ -360,6 +376,9 @@ func usageWhere(f store.UsageFilter) *where {
 	if f.Model != "" {
 		w.add("model = ?", f.Model)
 	}
+	if f.Account != "" {
+		w.add("account = ?", f.Account)
+	}
 	return w
 }
 
@@ -377,7 +396,7 @@ func (s *Store) ListUsage(ctx context.Context, f store.UsageFilter) ([]store.Usa
 		if err := rows.Scan(&r.ID, &r.CreatedAt, &r.KeyID, &r.TenantID, &r.AppID, &r.EndUser, &r.Endpoint, &r.Model,
 			&r.Provider, &r.UpstreamModel, &r.Stream, &r.StatusCode, &r.PromptTokens, &r.CompletionTokens,
 			&r.TotalTokens, &r.CachedTokens, &r.ReasoningTokens, &r.CostUSD, &r.Estimated, &r.LatencyMS, &r.Error,
-			&r.CacheWriteTokens, &r.Format, &r.SessionID); err != nil {
+			&r.CacheWriteTokens, &r.Format, &r.SessionID, &r.Account, &r.Attempts); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = r.CreatedAt.UTC()
@@ -391,6 +410,7 @@ var groupExpr = map[string]string{
 	"day":      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
 	"model":    "model",
 	"provider": "provider",
+	"account":  "provider || '/' || account",
 	"key":      "key_id",
 	"tenant":   "tenant_id",
 	"app":      "app_id",

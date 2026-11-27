@@ -26,12 +26,12 @@ func TestAnthropicCompat(t *testing.T) {
 		Name: "anthropic", Type: config.TypeAnthropic, BaseURL: srv.URL + "/v1", APIKey: "sk-ant-test",
 		WorkspaceID: "wrkspc_1", OpenAIFormat: config.OpenAIFormatCompat,
 		Headers: map[string]string{"X-Api-Key": "must-not-win", "X-Extra": "1"},
-	}}, srv.Client())
+	}}, BuildOptions{Client: srv.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := ps["anthropic"]
-	if _, ok := p.(*Anthropic); !ok || p.Name() != "anthropic" {
+	if _, ok := p.(*NativePool); !ok || p.Name() != "anthropic" {
 		t.Fatalf("Build gave %T %q", p, p.Name())
 	}
 

@@ -106,6 +106,13 @@ providers:
     api_key: ${ANTHROPIC_API_KEY}
     openai_format: compat        # required: OpenAI-format requests use Anthropic's OpenAI-compatible endpoint
     # workspace_id: wrkspc_...   # only for keys not scoped to one workspace
+    # Several accounts (docs/specs/spec-0004): use accounts instead of api_key.
+    # policy: priority (default; spend in this order) or round_robin (spread by weight).
+    # policy: round_robin
+    # sticky: session            # round_robin: keep a conversation on one account (prompt cache)
+    # accounts:
+    #   - { name: plan-a, api_key: "${ANTHROPIC_KEY_A}", weight: 3 }
+    #   - { name: plan-b, api_key: "${ANTHROPIC_KEY_B}", weight: 1 }
 
   # llama.cpp:  llama-server -m model.gguf --port 8090 --alias qwen
   #             add "--embeddings --pooling mean" to serve /v1/embeddings

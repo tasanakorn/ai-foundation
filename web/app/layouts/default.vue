@@ -9,6 +9,7 @@ const links: NavigationMenuItem[] = [
   { label: 'Usage', icon: 'i-lucide-chart-column', to: '/' },
   { label: 'API keys', icon: 'i-lucide-key-round', to: '/keys' },
   { label: 'Models', icon: 'i-lucide-boxes', to: '/models' },
+  { label: 'Providers', icon: 'i-lucide-server', to: '/providers' },
   { label: 'Playground', icon: 'i-lucide-messages-square', to: '/playground' },
   { label: 'Admins', icon: 'i-lucide-users', to: '/users' },
 ]

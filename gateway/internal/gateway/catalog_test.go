@@ -39,7 +39,7 @@ func TestCatalogSwapDuringRequest(t *testing.T) {
 		if _, err := catalog.Replace(ctx, e.st, store.AnyRevision, "test", "", c); err != nil {
 			t.Fatal(err)
 		}
-		s, err := catalog.Load(ctx, e.st, provider.NewHTTPClient(), nil)
+		s, err := catalog.Load(ctx, e.st, catalog.Env{Client: provider.NewHTTPClient()})
 		if err != nil {
 			t.Fatal(err)
 		}

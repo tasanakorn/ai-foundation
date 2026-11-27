@@ -126,6 +126,14 @@ func TestValidate(t *testing.T) {
 		"catalog mode":               db + "catalog: {mode: git}",
 		"catalog watch":              db + "catalog: {watch_interval: 1ms}",
 		"catalog secret key":         db + "catalog: {secret_keys: [c2hvcnQ=]}",
+		"api_key and accounts":       db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, api_key: k, accounts: [{name: a}]}]",
+		"account name":               db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, accounts: [{name: Plan A}]}]",
+		"account twice":              db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, accounts: [{name: a}, {name: a}]}]",
+		"weight with priority":       db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, accounts: [{name: a, weight: 2}]}]",
+		"weight too big":             db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, policy: round_robin, accounts: [{name: a, weight: 101}]}]",
+		"all drained":                db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, policy: round_robin, accounts: [{name: a, weight: 0}]}]",
+		"sticky with priority":       db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, sticky: key}]",
+		"bad policy":                 db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x, policy: random}]",
 		"sqlite driver":              "database: {url: \"postgres://x\", driver: sqlite}",
 		"old dsn":                    "database: {url: \"postgres://x\", dsn: aif.db}",
 		"pool sizes":                 "database: {url: \"postgres://x\", max_conns: 2, min_conns: 3}",
@@ -222,14 +230,17 @@ providers:
 	if cfg.Catalog.Mode != CatalogDatabase || cfg.Catalog.WatchInterval != 5*time.Second {
 		t.Fatalf("catalog defaults: %+v", cfg.Catalog)
 	}
-	p := cfg.Providers
-	if p[0].KeyRef != "env:AIF_TEST_KEY" || p[0].APIKey != "sk-from-env" {
-		t.Errorf("from ${}: ref %q", p[0].KeyRef)
+	acct := func(i int) Account { return cfg.Providers[i].Accounts[0] }
+	if a := acct(0); a.Name != DefaultAccount || a.KeyRef != "env:AIF_TEST_KEY" || a.APIKey != "sk-from-env" {
+		t.Errorf("from ${}: %+v", a)
 	}
-	if p[1].KeyRef != "env:B_KEY" || p[1].APIKey != "" {
-		t.Errorf("written reference: ref %q key %q", p[1].KeyRef, p[1].APIKey)
+	if a := acct(1); a.KeyRef != "env:B_KEY" || a.APIKey != "" {
+		t.Errorf("written reference: %+v", a)
 	}
-	if p[2].KeyRef != "" || p[2].APIKey != "literal" {
-		t.Errorf("literal: ref %q", p[2].KeyRef)
+	if a := acct(2); a.KeyRef != "" || a.APIKey != "literal" {
+		t.Errorf("literal: %+v", a)
+	}
+	if p := cfg.Providers[0]; p.APIKey != "" || p.KeyRef != "" || p.Policy != PolicyPriority || p.Sticky != StickyNone || p.Cooldown != 30*time.Second {
+		t.Errorf("provider defaults: %+v", p)
 	}
 }

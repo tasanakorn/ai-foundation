@@ -41,8 +41,9 @@ type family struct {
 	name, help string
 	kind       kind
 	labels     []string
-	buckets    []float64      // histogram only, ascending, without +Inf
-	fn         func() float64 // gauge or counter read at scrape time
+	buckets    []float64       // histogram only, ascending, without +Inf
+	fn         func() float64  // gauge or counter read at scrape time
+	collect    func() []Sample // labeled gauge read at scrape time
 
 	mu     sync.Mutex
 	series map[string]*series
@@ -97,6 +98,17 @@ func (r *Registry) GaugeFunc(name, help string, fn func() float64) {
 // CounterFunc adds an unlabeled counter read at scrape time (fn must never go down).
 func (r *Registry) CounterFunc(name, help string, fn func() float64) {
 	r.add(&family{name: name, help: help, kind: kindCounter, fn: fn})
+}
+
+// Sample is one labeled value from a GaugeVecFunc.
+type Sample struct {
+	Values []string
+	Value  float64
+}
+
+// GaugeVecFunc adds a labeled gauge whose series are read at scrape time (at most MaxSeries).
+func (r *Registry) GaugeVecFunc(name, help string, labels []string, fn func() []Sample) {
+	r.add(&family{name: name, help: help, kind: kindGauge, labels: labels, collect: fn})
 }
 
 // get returns the series for values, creating it (or the overflow series). Caller holds f.mu.
@@ -180,6 +192,19 @@ func (f *family) write(w *bufio.Writer) {
 	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", f.name, escapeHelp(f.help), f.name, f.kind)
 	if f.fn != nil {
 		fmt.Fprintf(w, "%s %s\n", f.name, num(f.fn()))
+		return
+	}
+	if f.collect != nil {
+		samples := f.collect()
+		sort.Slice(samples, func(i, j int) bool {
+			return strings.Join(samples[i].Values, "\xff") < strings.Join(samples[j].Values, "\xff")
+		})
+		for i, s := range samples {
+			if i == MaxSeries || len(s.Values) != len(f.labels) {
+				break
+			}
+			fmt.Fprintf(w, "%s%s %s\n", f.name, labelText(f.labels, s.Values, "", ""), num(s.Value))
+		}
 		return
 	}
 	f.mu.Lock()

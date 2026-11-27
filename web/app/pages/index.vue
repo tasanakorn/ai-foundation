@@ -13,6 +13,7 @@ const ranges = [
 const groups: { label: string, value: GroupBy }[] = [
   { label: 'Model', value: 'model' },
   { label: 'Provider', value: 'provider' },
+  { label: 'Account', value: 'account' },
   { label: 'Day', value: 'day' },
   { label: 'Tenant', value: 'tenant' },
   { label: 'App', value: 'app' },
@@ -64,7 +65,9 @@ const groupColumns = computed<TableColumn<UsageSummary>[]>(() => [
 const recentColumns: TableColumn<UsageRecord>[] = [
   { accessorKey: 'created_at', header: 'Time', cell: ({ row }) => fmtTime(row.original.created_at) },
   { accessorKey: 'model', header: 'Model' },
-  { accessorKey: 'provider', header: 'Provider' },
+  { accessorKey: 'provider', header: 'Provider', cell: ({ row }) => row.original.account
+    ? `${row.original.provider} / ${row.original.account}${row.original.attempts > 1 ? ` (${row.original.attempts} tries)` : ''}`
+    : row.original.provider },
   { accessorKey: 'tenant_id', header: 'Tenant / App' },
   { accessorKey: 'end_user', header: 'End user' },
   { accessorKey: 'status_code', header: 'Status' },

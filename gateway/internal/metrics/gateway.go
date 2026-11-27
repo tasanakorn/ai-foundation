@@ -19,6 +19,14 @@ type Checks struct {
 	Dropped  func() int64 // usage records dropped by the recorder
 	// Catalog is the revision this node serves and when that snapshot was loaded.
 	Catalog func() (revision int64, loadedAt time.Time)
+	// Accounts is every provider account and whether it rests (spec-0004 section 7).
+	Accounts func() []AccountState
+}
+
+// AccountState is one account for aif_account_cooldown.
+type AccountState struct {
+	Provider, Account string
+	Cooldown          bool
 }
 
 // Gateway is the gateway's metric set (spec-0003 section 4.4). A nil *Gateway is a no-op,
@@ -33,6 +41,7 @@ type Gateway struct {
 	hooks     *Vec
 	sinkErrs  *Vec
 	reloads   *Vec
+	attempts  *Vec
 }
 
 // New builds the metric set. The endpoint is served only when metrics.listen is on.
@@ -53,6 +62,21 @@ func New(version string, c Checks) *Gateway {
 			return 0
 		}
 		return float64(c.Dropped())
+	})
+	g.attempts = r.Counter("aif_upstream_attempts_total", "Upstream calls by provider account and outcome (ok, rate_limited, error, auth, no_credits, client_error).", "provider", "account", "outcome")
+	r.GaugeVecFunc("aif_account_cooldown", "1 while a provider account rests after a failure.", []string{"provider", "account"}, func() []Sample {
+		if c.Accounts == nil {
+			return nil
+		}
+		var out []Sample
+		for _, a := range c.Accounts() {
+			v := 0.0
+			if a.Cooldown {
+				v = 1
+			}
+			out = append(out, Sample{Values: []string{a.Provider, a.Account}, Value: v})
+		}
+		return out
 	})
 	g.reloads = r.Counter("aif_catalog_reloads_total", "Catalog reloads that found a new revision, by result (ok, error).", "result")
 	r.GaugeFunc("aif_catalog_revision", "Catalog revision this node serves.", func() float64 {
@@ -130,6 +154,14 @@ func (g *Gateway) CatalogReload(result string) {
 		return
 	}
 	g.reloads.Inc(result)
+}
+
+// UpstreamAttempt counts one upstream call. It implements provider.Observer.
+func (g *Gateway) UpstreamAttempt(provider, account, outcome string) {
+	if g == nil {
+		return
+	}
+	g.attempts.Inc(provider, account, outcome)
 }
 
 // HookDecision counts one pre-request hook result: allow, deny, modify or unavailable.

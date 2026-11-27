@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -26,7 +27,7 @@ import (
 )
 
 // DefaultAccount is the account name of a provider written with a single api_key.
-const DefaultAccount = "default"
+const DefaultAccount = config.DefaultAccount
 
 // Snapshot is one immutable catalog: never changed after Build.
 type Snapshot struct {
@@ -80,21 +81,29 @@ func FromFile(cfg *config.Config) (*store.Catalog, error) {
 
 // FromCatalogFile is FromFile for a file that holds only the catalog (import).
 func FromCatalogFile(cfg *config.CatalogOnly) (*store.Catalog, error) {
+	// Normalize copies: Parse already did, but a hand-built or changed config may not be.
+	providers := append([]config.Provider(nil), cfg.Providers...)
+	models := append([]config.Model(nil), cfg.Models...)
+	config.NormalizeCatalog(providers, models)
 	c := &store.Catalog{Passthrough: cfg.Passthrough, Providers: []store.CatalogProvider{}, Models: []store.CatalogModel{}}
-	for _, p := range cfg.Providers {
-		ref := p.KeyRef
-		if ref == "" && p.APIKey != "" {
-			return nil, &InvalidError{fmt.Errorf("provider %q: api_key is a value written in the file; put the key in an environment variable and write ${NAME}, or use env:NAME or file:/path (keys are never stored in the database)", p.Name)}
-		}
+	for _, p := range providers {
 		headers := copyMap(p.Headers)
 		if headers == nil {
 			headers = map[string]string{}
 		}
-		c.Providers = append(c.Providers, store.CatalogProvider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: headers,
-			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat,
-			Accounts: []store.CatalogAccount{{Name: DefaultAccount, KeyRef: ref}}})
+		sp := store.CatalogProvider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: headers,
+			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat, Accounts: []store.CatalogAccount{},
+			Policy: p.Policy, Sticky: p.Sticky, MaxAttempts: p.MaxAttempts, Cooldown: p.Cooldown}
+		for _, a := range p.Accounts {
+			if a.KeyRef == "" && a.APIKey != "" {
+				return nil, &InvalidError{fmt.Errorf("provider %q account %q: api_key is a value written in the file; put the key in an environment variable and write ${NAME}, or use env:NAME or file:/path (keys are never stored in the database)", p.Name, a.Name)}
+			}
+			sp.Accounts = append(sp.Accounts, store.CatalogAccount{Name: a.Name, KeyRef: a.KeyRef, Weight: a.Weight,
+				BaseURL: a.BaseURL, Headers: copyMap(a.Headers), WorkspaceID: a.WorkspaceID})
+		}
+		c.Providers = append(c.Providers, sp)
 	}
-	for _, m := range cfg.Models {
+	for _, m := range models {
 		t := store.CatalogTarget{Provider: m.Provider, Upstream: m.Upstream}
 		if m.Price != nil {
 			pr := store.Price(*m.Price)
@@ -130,9 +139,14 @@ func canon(c *store.Catalog) store.Catalog {
 		if p.Headers == nil {
 			p.Headers = map[string]string{}
 		}
-		if p.Accounts == nil {
-			p.Accounts = []store.CatalogAccount{}
+		accounts := []store.CatalogAccount{}
+		for _, a := range p.Accounts {
+			if len(a.Headers) == 0 {
+				a.Headers = nil
+			}
+			accounts = append(accounts, a)
 		}
+		p.Accounts = accounts
 		out.Providers = append(out.Providers, p)
 	}
 	for _, m := range c.Models {
@@ -152,29 +166,57 @@ func Describe(c *store.Catalog) string {
 	return fmt.Sprintf("%d providers, %d models", len(c.Providers), len(c.Models))
 }
 
+// Env is what building a snapshot needs besides the catalog.
+type Env struct {
+	Client   *http.Client
+	Keyring  *Keyring          // decrypts encrypted keys; nil = references only
+	Observer provider.Observer // optional: upstream attempt metrics
+	Log      *slog.Logger      // optional: failed upstream attempts
+}
+
 // Load reads the catalog from the database and builds a snapshot.
-func Load(ctx context.Context, st store.Store, client *http.Client, kr *Keyring) (*Snapshot, error) {
+func Load(ctx context.Context, st store.Store, env Env) (*Snapshot, error) {
 	c, err := st.GetCatalog(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read catalog: %w", err)
 	}
-	return Build(c, client, kr)
+	return Build(c, env)
 }
 
 // Build checks c, resolves its keys (references, or encrypted values with kr) and makes
 // the providers and the router. It fails, and the caller keeps its last good snapshot,
 // when c is invalid or a key does not resolve (spec-0006 section 5.5). kr may be nil
 // when the catalog has no encrypted keys.
-func Build(c *store.Catalog, client *http.Client, kr *Keyring) (*Snapshot, error) {
-	providers, models, err := toConfig(c, kr, true)
+func Build(c *store.Catalog, env Env) (*Snapshot, error) {
+	providers, models, err := toConfig(c, env.Keyring, true)
 	if err != nil {
 		return nil, err
 	}
-	built, err := provider.Build(providers, client)
+	built, err := provider.Build(providers, provider.BuildOptions{Client: env.Client, Observer: env.Observer, Log: env.Log})
 	if err != nil {
 		return nil, err
 	}
 	return &Snapshot{Revision: c.Revision, Catalog: c, Router: router.New(models, built, c.Passthrough), LoadedAt: time.Now()}, nil
+}
+
+// InheritState moves account state (cooldowns, round-robin positions) from prev into s,
+// by provider and account name (spec-0006 section 5.6). Call it before s is served.
+func (s *Snapshot) InheritState(prev *Snapshot) {
+	if prev == nil || prev.Router == nil || s.Router == nil {
+		return
+	}
+	for _, name := range s.Router.Providers() {
+		np, _ := s.Router.Provider(name)
+		op, ok := prev.Router.Provider(name)
+		if !ok {
+			continue
+		}
+		if a, ok := provider.AsPool(np); ok {
+			if b, ok := provider.AsPool(op); ok {
+				a.Inherit(b)
+			}
+		}
+	}
 }
 
 // InvalidError is a catalog that fails validation. Nothing was written or swapped.
@@ -209,36 +251,34 @@ func Replace(ctx context.Context, st store.Store, ifRevision int64, actor, summa
 	})
 }
 
-var accountName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-
 // toConfig converts c to the config types, applies defaults and validates. With resolve,
 // keys are read (references) or decrypted with kr; without, keys stay empty (validation only).
 func toConfig(c *store.Catalog, kr *Keyring, resolve bool) ([]config.Provider, []config.Model, error) {
 	invalid := func(format string, a ...any) error { return &InvalidError{fmt.Errorf(format, a...)} }
 	providers := make([]config.Provider, 0, len(c.Providers))
 	for _, p := range c.Providers {
-		// Several accounts and their policy arrive with spec-0004 (task-0020).
-		if len(p.Accounts) != 1 {
-			return nil, nil, invalid("provider %q: has %d accounts; exactly one is supported until spec-0004", p.Name, len(p.Accounts))
-		}
-		a := p.Accounts[0]
-		if !accountName.MatchString(a.Name) {
-			return nil, nil, invalid("provider %q: account name %q: use a-z, 0-9 and '-'", p.Name, a.Name)
-		}
-		if err := checkAccountKey(a); err != nil {
-			return nil, nil, invalid("provider %q account %q: %v", p.Name, a.Name, err)
+		if len(p.Accounts) == 0 {
+			return nil, nil, invalid("provider %q: needs at least one account", p.Name)
 		}
 		cp := config.Provider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: copyMap(p.Headers),
-			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat}
-		if resolve {
-			key, err := ResolveKey(a.KeyRef)
-			if a.KeyCipher != nil {
-				key, err = kr.open(a)
+			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat,
+			Policy: p.Policy, Sticky: p.Sticky, MaxAttempts: p.MaxAttempts, Cooldown: p.Cooldown}
+		for _, a := range p.Accounts {
+			if err := checkAccountKey(a); err != nil {
+				return nil, nil, invalid("provider %q account %q: %v", p.Name, a.Name, err)
 			}
-			if err != nil {
-				return nil, nil, fmt.Errorf("provider %q account %q: %w", p.Name, a.Name, err)
+			ca := config.Account{Name: a.Name, Weight: a.Weight, BaseURL: a.BaseURL, Headers: copyMap(a.Headers), WorkspaceID: a.WorkspaceID}
+			if resolve {
+				key, err := ResolveKey(a.KeyRef)
+				if a.KeyCipher != nil {
+					key, err = kr.open(a)
+				}
+				if err != nil {
+					return nil, nil, fmt.Errorf("provider %q account %q: %w", p.Name, a.Name, err)
+				}
+				ca.APIKey = key
 			}
-			cp.APIKey = key
+			cp.Accounts = append(cp.Accounts, ca)
 		}
 		providers = append(providers, cp)
 	}

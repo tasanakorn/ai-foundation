@@ -21,6 +21,7 @@ import (
 	"ai-foundation/gateway/internal/clientip"
 	"ai-foundation/gateway/internal/httpx"
 	"ai-foundation/gateway/internal/keys"
+	"ai-foundation/gateway/internal/provider"
 	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store"
 )
@@ -35,6 +36,7 @@ type Handler struct {
 	cookieSecure string
 	uiDir        string
 	clientIP     *clientip.Resolver
+	nodeID       string
 	log          *slog.Logger
 }
 
@@ -48,12 +50,13 @@ type Options struct {
 	CookieSecure string       // auto, always, never
 	UIDir        string
 	ClientIP     *clientip.Resolver // client IP behind trusted proxies; nil = TCP peer
+	NodeID       string             // shown with per-node state (GET /admin/v1/providers)
 	Log          *slog.Logger
 }
 
 func New(o Options) *Handler {
 	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, routes: o.Router, public: o.Public, masterKey: o.MasterKey,
-		cookieSecure: o.CookieSecure, uiDir: o.UIDir, clientIP: o.ClientIP, log: o.Log}
+		cookieSecure: o.CookieSecure, uiDir: o.UIDir, clientIP: o.ClientIP, nodeID: o.NodeID, log: o.Log}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -86,6 +89,7 @@ func (h *Handler) Routes() http.Handler {
 	api("GET /admin/v1/keys/{id}", h.getKey)
 	api("DELETE /admin/v1/keys/{id}", h.revokeKey)
 	api("GET /admin/v1/models", h.listModels)
+	api("GET /admin/v1/providers", h.listProviders)
 	api("GET /admin/v1/usage", h.listUsage)
 	api("GET /admin/v1/usage/summary", h.summarizeUsage)
 	if h.uiDir != "" {
@@ -157,13 +161,27 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// listProviders shows each provider with its policy and accounts, as this node sees
+// them (cooldowns are per node, spec-0004 section 8). Never a key.
+func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
+	rt := h.routes.Router()
+	out := []provider.PoolState{}
+	for _, name := range rt.Providers() {
+		p, _ := rt.Provider(name)
+		if pool, ok := provider.AsPool(p); ok {
+			out = append(out, pool.State())
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": h.nodeID, "data": out})
+}
+
 // ---- usage ----
 
 func usageFilter(r *http.Request) (store.UsageFilter, error) {
 	q := r.URL.Query()
 	f := store.UsageFilter{
 		ID: q.Get("id"), KeyID: q.Get("key_id"), TenantID: q.Get("tenant_id"), AppID: q.Get("app_id"),
-		EndUser: q.Get("end_user"), Model: q.Get("model"),
+		EndUser: q.Get("end_user"), Model: q.Get("model"), Account: q.Get("account"),
 		Limit: atoi(q.Get("limit")), Offset: atoi(q.Get("offset")),
 	}
 	var err error

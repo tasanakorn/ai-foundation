@@ -57,7 +57,7 @@ func start(t *testing.T, st store.Store, cfg *config.Config) *catalog.Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := catalog.Start(context.Background(), catalog.Options{Store: st, Client: provider.NewHTTPClient(), Log: quiet,
+	m, err := catalog.Start(context.Background(), catalog.Options{Store: st, Env: catalog.Env{Client: provider.NewHTTPClient()}, Log: quiet,
 		Mode: cfg.Catalog.Mode, File: file, Path: cfg.Path, WatchInterval: cfg.Catalog.WatchInterval})
 	if err != nil {
 		t.Fatal(err)

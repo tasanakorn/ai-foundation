@@ -55,7 +55,7 @@ func TestKeyringRotation(t *testing.T) {
 		}
 	}
 	use := func(kr *catalog.Keyring, acc store.CatalogAccount) error {
-		s, err := catalog.Build(cat(acc), provider.NewHTTPClient(), kr)
+		s, err := catalog.Build(cat(acc), catalog.Env{Client: provider.NewHTTPClient(), Keyring: kr})
 		if err != nil {
 			return err
 		}
@@ -138,7 +138,7 @@ func TestEncryptedKeyStoredNotShown(t *testing.T) {
 	if _, err := catalog.Replace(ctx, st, 0, "admin", "", c); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.Load(ctx, st, provider.NewHTTPClient(), kr); err != nil {
+	if _, err := catalog.Load(ctx, st, catalog.Env{Client: provider.NewHTTPClient(), Keyring: kr}); err != nil {
 		t.Fatalf("load with an encrypted key: %v", err)
 	}
 	got, _ := st.GetCatalog(ctx)

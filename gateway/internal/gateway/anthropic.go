@@ -124,7 +124,7 @@ func (h *Handler) messages(endpoint string) http.HandlerFunc {
 			rec.LatencyMS = time.Since(start).Milliseconds()
 			h.rec.Record(rec)
 			h.log.Info("request", "id", reqID, "key", k.ID, "format", formatAnthropic, "endpoint", endpoint, "model", rec.Model,
-				"provider", rec.Provider, "status", rec.StatusCode, "stream", rec.Stream, "tokens", rec.TotalTokens,
+				"provider", rec.Provider, "account", rec.Account, "attempts", rec.Attempts, "status", rec.StatusCode, "stream", rec.Stream, "tokens", rec.TotalTokens,
 				"cached", rec.CachedTokens, "estimated", rec.Estimated, "latency_ms", rec.LatencyMS)
 		}()
 
@@ -150,7 +150,9 @@ func (h *Handler) messages(endpoint string) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
 		native := p.route.Provider.(provider.Native)
+		ctx, trace := provider.WithTrace(provider.WithIdentity(ctx, provider.Identity{KeyID: k.ID, EndUser: rec.EndUser, Session: rec.SessionID}))
 		resp, err := native.Native(ctx, http.MethodPost, endpoint, r.URL.RawQuery, forwardHeaders(r.Header), out)
+		rec.Account, rec.Attempts = trace.Account, trace.Attempts
 		if err != nil {
 			rec.StatusCode, rec.Error = http.StatusBadGateway, err.Error()
 			switch {

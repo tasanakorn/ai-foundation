@@ -13,6 +13,7 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 3. Hot reload across nodes (task-0017): new control event `aif.control.v1.catalog_changed` `{type, revision, node, at}`, a revision poll (`catalog.poll_interval`, 30s), and metrics `aif_catalog_revision`, `aif_catalog_reloads_total`, `aif_catalog_last_reload_seconds`.
 4. Encrypted provider keys (task-0018): `catalog.secret_keys` (`AIF_CATALOG_SECRET_KEY`) and migration v5. Keys are stored as references or AES-256-GCM values, never returned.
 5. `aif catalog export | import | set-key | history` (task-0019): backup and apply the database catalog, store an encrypted provider key, list revisions.
+6. Several accounts per provider (spec-0004, task-0020): `accounts`, `policy: priority | round_robin` (weighted), `sticky`, failover before the first byte with per-account cooldowns. Usage records and NATS usage events get `account` and `attempts` (migration v6). New metrics `aif_upstream_attempts_total` and `aif_account_cooldown`, new `GET /admin/v1/providers` and a Providers page.
 
 ### Changed
 

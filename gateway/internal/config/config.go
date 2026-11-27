@@ -210,7 +210,45 @@ type Provider struct {
 	// Anthropic only (spec-0002 section 5).
 	WorkspaceID  string `yaml:"workspace_id"`  // sent as anthropic-workspace-id; only for keys not scoped to one workspace
 	OpenAIFormat string `yaml:"openai_format"` // required: how OpenAI-format requests reach Anthropic (compat)
+
+	// Several accounts (keys) and how one is picked per request (spec-0004).
+	// A provider has api_key or accounts, not both; api_key is one account named "default".
+	Accounts    []Account     `yaml:"accounts"`
+	Policy      string        `yaml:"policy"`       // priority (default) or round_robin
+	Sticky      string        `yaml:"sticky"`       // round_robin only: none (default), key, end_user, session
+	MaxAttempts int           `yaml:"max_attempts"` // accounts tried per request; 0 = all
+	Cooldown    time.Duration `yaml:"cooldown"`     // rest after a retryable failure; default 30s
 }
+
+// Account is one key of a provider. BaseURL, Headers and WorkspaceID override the provider's.
+type Account struct {
+	Name        string            `yaml:"name"`
+	APIKey      string            `yaml:"api_key"`
+	KeyRef      string            `yaml:"-"`      // see Provider.KeyRef
+	Weight      *int              `yaml:"weight"` // round_robin only, 0-100, default 1; 0 drains the account
+	BaseURL     string            `yaml:"base_url"`
+	Headers     map[string]string `yaml:"headers"`
+	WorkspaceID string            `yaml:"workspace_id"`
+}
+
+// WeightOr returns the weight, or 1 when it is not set.
+func (a Account) WeightOr() int {
+	if a.Weight == nil {
+		return 1
+	}
+	return *a.Weight
+}
+
+// Account selection policies and sticky modes (spec-0004 section 4).
+const (
+	PolicyPriority   = "priority"
+	PolicyRoundRobin = "round_robin"
+	StickyNone       = "none"
+	StickyKey        = "key"
+	StickyEndUser    = "end_user"
+	StickySession    = "session"
+	DefaultAccount   = "default"
+)
 
 // Provider types.
 const (
@@ -310,15 +348,21 @@ func ParseCatalog(raw []byte) (*CatalogOnly, error) {
 // setKeyRefs fills Provider.KeyRef: api_key written as env:NAME or file:/path is a
 // reference; a value that came from ${NAME} becomes env:NAME.
 func setKeyRefs(providers []Provider, fromEnv map[string]string) {
+	set := func(key, ref *string) {
+		switch {
+		case strings.HasPrefix(*key, "env:") || strings.HasPrefix(*key, "file:"):
+			*ref, *key = *key, ""
+		case *key != "":
+			if name, ok := fromEnv[*key]; ok {
+				*ref = "env:" + name
+			}
+		}
+	}
 	for i := range providers {
 		p := &providers[i]
-		switch {
-		case strings.HasPrefix(p.APIKey, "env:") || strings.HasPrefix(p.APIKey, "file:"):
-			p.KeyRef, p.APIKey = p.APIKey, ""
-		case p.APIKey != "":
-			if name, ok := fromEnv[p.APIKey]; ok {
-				p.KeyRef = "env:" + name
-			}
+		set(&p.APIKey, &p.KeyRef)
+		for j := range p.Accounts {
+			set(&p.Accounts[j].APIKey, &p.Accounts[j].KeyRef)
 		}
 	}
 }
@@ -445,6 +489,22 @@ func NormalizeCatalog(providers []Provider, models []Model) {
 			}
 		}
 		p.BaseURL = strings.TrimRight(p.BaseURL, "/")
+		if len(p.Accounts) == 0 { // api_key form: one account named "default"
+			p.Accounts = []Account{{Name: DefaultAccount, APIKey: p.APIKey, KeyRef: p.KeyRef}}
+			p.APIKey, p.KeyRef = "", ""
+		}
+		for j := range p.Accounts {
+			p.Accounts[j].BaseURL = strings.TrimRight(p.Accounts[j].BaseURL, "/")
+		}
+		if p.Policy == "" {
+			p.Policy = PolicyPriority
+		}
+		if p.Sticky == "" {
+			p.Sticky = StickyNone
+		}
+		if p.Cooldown == 0 {
+			p.Cooldown = 30 * time.Second
+		}
 		types[p.Name] = p.Type
 	}
 	for i := range models {
@@ -544,6 +604,9 @@ func ValidateCatalog(providers []Provider, models []Model) error {
 		if err := p.validateAnthropic(); err != nil {
 			return err
 		}
+		if err := p.validateAccounts(); err != nil {
+			return err
+		}
 		known[p.Name] = p.Type
 	}
 	seen := map[string]bool{}
@@ -603,6 +666,55 @@ func validHeaderName(s string) bool {
 		}
 	}
 	return true
+}
+
+var accountName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// validateAccounts checks accounts and the selection policy (spec-0004 section 3), after NormalizeCatalog.
+func (p Provider) validateAccounts() error {
+	if p.APIKey != "" || p.KeyRef != "" {
+		return fmt.Errorf("provider %q: use api_key or accounts, not both", p.Name)
+	}
+	switch p.Policy {
+	case PolicyPriority, PolicyRoundRobin:
+	default:
+		return fmt.Errorf("provider %q: policy %q: use priority or round_robin", p.Name, p.Policy)
+	}
+	switch p.Sticky {
+	case StickyNone:
+	case StickyKey, StickyEndUser, StickySession:
+		if p.Policy != PolicyRoundRobin {
+			return fmt.Errorf("provider %q: sticky works only with policy round_robin", p.Name)
+		}
+	default:
+		return fmt.Errorf("provider %q: sticky %q: use none, key, end_user or session", p.Name, p.Sticky)
+	}
+	if p.MaxAttempts < 0 || p.Cooldown < 0 {
+		return fmt.Errorf("provider %q: max_attempts and cooldown must not be negative", p.Name)
+	}
+	seen, first := map[string]bool{}, 0
+	for _, a := range p.Accounts {
+		switch {
+		case !accountName.MatchString(a.Name):
+			return fmt.Errorf("provider %q: account name %q: use a-z, 0-9 and '-'", p.Name, a.Name)
+		case seen[a.Name]:
+			return fmt.Errorf("provider %q: account %q defined twice", p.Name, a.Name)
+		case a.Weight != nil && p.Policy != PolicyRoundRobin:
+			return fmt.Errorf("provider %q account %q: weight works only with policy round_robin", p.Name, a.Name)
+		case a.WeightOr() < 0 || a.WeightOr() > 100:
+			return fmt.Errorf("provider %q account %q: weight must be 0 to 100", p.Name, a.Name)
+		case a.WorkspaceID != "" && p.Type != TypeAnthropic:
+			return fmt.Errorf("provider %q account %q: workspace_id is only for type anthropic", p.Name, a.Name)
+		}
+		seen[a.Name] = true
+		if a.WeightOr() > 0 {
+			first++
+		}
+	}
+	if p.Policy == PolicyRoundRobin && first == 0 {
+		return fmt.Errorf("provider %q: round_robin needs at least one account with weight above 0", p.Name)
+	}
+	return nil
 }
 
 func (p Provider) validateAnthropic() error {

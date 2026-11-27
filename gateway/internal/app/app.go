@@ -22,6 +22,7 @@ import (
 	"ai-foundation/gateway/internal/metering"
 	"ai-foundation/gateway/internal/metrics"
 	"ai-foundation/gateway/internal/provider"
+	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store"
 )
 
@@ -75,7 +76,8 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		Catalog: func() (int64, time.Time) {
 			s := a.Catalog.Snapshot()
 			return s.Revision, s.LoadedAt
-		}})
+		},
+		Accounts: func() []metrics.AccountState { return accountStates(a.Catalog.Router()) }})
 
 	// The catalog: seed or sync, then load (spec-0006 section 6).
 	file, err := catalog.FromFile(cfg)
@@ -86,7 +88,8 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 	if err != nil {
 		return nil, fmt.Errorf("catalog.secret_keys: %w", err)
 	}
-	cm, err := catalog.Start(ctx, catalog.Options{Keyring: kr, Store: st, Client: provider.NewHTTPClient(), Log: log,
+	env := catalog.Env{Client: provider.NewHTTPClient(), Keyring: kr, Observer: a.Metrics, Log: log}
+	cm, err := catalog.Start(ctx, catalog.Options{Env: env, Store: st, Log: log,
 		Mode: cfg.Catalog.Mode, File: file, Path: cfg.Path, WatchInterval: cfg.Catalog.WatchInterval,
 		PollInterval: cfg.Catalog.PollInterval, Publish: nb.PublishCatalogChanged, Observer: a.Metrics})
 	if err != nil {
@@ -129,12 +132,28 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		}
 		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Catalog, Public: a.Public,
 			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir,
-			ClientIP: ips, Log: log}).Routes()
+			ClientIP: ips, NodeID: nb.NodeID, Log: log}).Routes()
 	}
 	runCtx, stop := context.WithCancel(context.Background())
 	a.stop = stop
 	go cm.Run(runCtx)
 	return a, nil
+}
+
+// accountStates lists every provider account of the current snapshot and whether it rests.
+func accountStates(rt *router.Router) []metrics.AccountState {
+	var out []metrics.AccountState
+	for _, name := range rt.Providers() {
+		p, _ := rt.Provider(name)
+		pool, ok := provider.AsPool(p)
+		if !ok {
+			continue
+		}
+		for _, a := range pool.State().Accounts {
+			out = append(out, metrics.AccountState{Provider: name, Account: a.Name, Cooldown: a.State == "cooldown"})
+		}
+	}
+	return out
 }
 
 // Close stops the background work and flushes buffered usage to every sink.

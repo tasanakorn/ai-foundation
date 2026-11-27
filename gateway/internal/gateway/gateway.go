@@ -22,6 +22,7 @@ import (
 	"ai-foundation/gateway/internal/keys"
 	"ai-foundation/gateway/internal/metering"
 	"ai-foundation/gateway/internal/metrics"
+	"ai-foundation/gateway/internal/provider"
 	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store"
 )
@@ -230,7 +231,7 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 			rec.LatencyMS = time.Since(start).Milliseconds()
 			h.rec.Record(rec)
 			h.log.Info("request", "id", reqID, "key", k.ID, "model", rec.Model, "provider", rec.Provider,
-				"status", rec.StatusCode, "stream", rec.Stream, "tokens", rec.TotalTokens, "estimated", rec.Estimated,
+				"account", rec.Account, "attempts", rec.Attempts, "status", rec.StatusCode, "stream", rec.Stream, "tokens", rec.TotalTokens, "estimated", rec.Estimated,
 				"latency_ms", rec.LatencyMS)
 		}()
 
@@ -251,7 +252,9 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
+		ctx, trace := provider.WithTrace(provider.WithIdentity(ctx, provider.Identity{KeyID: k.ID, EndUser: rec.EndUser, Session: r.Header.Get(SessionHeader)}))
 		resp, err := p.route.Provider.Do(ctx, endpoint, out)
+		rec.Account, rec.Attempts = trace.Account, trace.Attempts
 		if err != nil {
 			rec.StatusCode, rec.Error = http.StatusBadGateway, err.Error()
 			switch {

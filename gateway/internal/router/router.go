@@ -79,6 +79,12 @@ func (r *Router) Models() []ModelInfo {
 	return out
 }
 
+// Provider returns a provider by name.
+func (r *Router) Provider(name string) (provider.Provider, bool) {
+	p, ok := r.providers[name]
+	return p, ok
+}
+
 // Providers lists provider names, sorted.
 func (r *Router) Providers() []string {
 	out := make([]string, 0, len(r.providers))

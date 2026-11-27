@@ -96,7 +96,7 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 	}
 	c.UpdatedAt = c.UpdatedAt.UTC()
 
-	rows, err := q.Query(ctx, `SELECT name, type, base_url, headers, workspace_id, openai_format FROM catalog_providers ORDER BY position`)
+	rows, err := q.Query(ctx, `SELECT name, type, base_url, headers, workspace_id, openai_format, policy, sticky, max_attempts, cooldown_ms FROM catalog_providers ORDER BY position`)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,8 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 	for rows.Next() {
 		var p store.CatalogProvider
 		var headers []byte
-		if err := rows.Scan(&p.Name, &p.Type, &p.BaseURL, &headers, &p.WorkspaceID, &p.OpenAIFormat); err != nil {
+		var cooldownMS int64
+		if err := rows.Scan(&p.Name, &p.Type, &p.BaseURL, &headers, &p.WorkspaceID, &p.OpenAIFormat, &p.Policy, &p.Sticky, &p.MaxAttempts, &cooldownMS); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -112,6 +113,7 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 			rows.Close()
 			return nil, fmt.Errorf("provider %q headers: %w", p.Name, err)
 		}
+		p.Cooldown = time.Duration(cooldownMS) * time.Millisecond
 		p.Accounts = []store.CatalogAccount{}
 		byName[p.Name] = len(c.Providers)
 		c.Providers = append(c.Providers, p)
@@ -121,16 +123,24 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		return nil, err
 	}
 
-	rows, err = q.Query(ctx, `SELECT provider, name, key_ref, key_cipher, key_id, key_hint FROM catalog_accounts ORDER BY provider, position`)
+	rows, err = q.Query(ctx, `SELECT provider, name, key_ref, key_cipher, key_id, key_hint, weight, base_url, headers, workspace_id FROM catalog_accounts ORDER BY provider, position`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var prov string
 		var a store.CatalogAccount
-		if err := rows.Scan(&prov, &a.Name, &a.KeyRef, &a.KeyCipher, &a.KeyID, &a.KeyHint); err != nil {
+		var headers []byte
+		if err := rows.Scan(&prov, &a.Name, &a.KeyRef, &a.KeyCipher, &a.KeyID, &a.KeyHint, &a.Weight, &a.BaseURL, &headers, &a.WorkspaceID); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if err := json.Unmarshal(headers, &a.Headers); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("account %q headers: %w", a.Name, err)
+		}
+		if len(a.Headers) == 0 {
+			a.Headers = nil // account headers are only overrides
 		}
 		if i, ok := byName[prov]; ok {
 			c.Providers[i].Accounts = append(c.Providers[i].Accounts, a)
@@ -201,11 +211,14 @@ func writeCatalog(ctx context.Context, tx pgx.Tx, c *store.Catalog) error {
 	b := &pgx.Batch{}
 	for i, p := range c.Providers {
 		headers, _ := json.Marshal(nonNilMap(p.Headers))
-		b.Queue(`INSERT INTO catalog_providers (name, position, type, base_url, headers, workspace_id, openai_format) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			p.Name, i, p.Type, p.BaseURL, headers, p.WorkspaceID, p.OpenAIFormat)
+		b.Queue(`INSERT INTO catalog_providers (name, position, type, base_url, headers, workspace_id, openai_format, policy, sticky, max_attempts, cooldown_ms)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			p.Name, i, p.Type, p.BaseURL, headers, p.WorkspaceID, p.OpenAIFormat, p.Policy, p.Sticky, p.MaxAttempts, p.Cooldown.Milliseconds())
 		for j, a := range p.Accounts {
-			b.Queue(`INSERT INTO catalog_accounts (provider, name, position, key_ref, key_cipher, key_id, key_hint) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				p.Name, a.Name, j, a.KeyRef, a.KeyCipher, a.KeyID, a.KeyHint)
+			ah, _ := json.Marshal(nonNilMap(a.Headers))
+			b.Queue(`INSERT INTO catalog_accounts (provider, name, position, key_ref, key_cipher, key_id, key_hint, weight, base_url, headers, workspace_id)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+				p.Name, a.Name, j, a.KeyRef, a.KeyCipher, a.KeyID, a.KeyHint, a.Weight, a.BaseURL, ah, a.WorkspaceID)
 		}
 	}
 	for i, m := range c.Models {

@@ -28,7 +28,7 @@ const columns: TableColumn<ModelInfo>[] = [
         icon="i-lucide-info"
         color="neutral"
         variant="subtle"
-        title="Models and providers come from the gateway config file."
+        title="Models and providers come from the catalog in the database (seeded by the config file, or kept in sync with it in file mode)."
         :description="data?.passthrough
           ? 'Passthrough is on: clients can also call <provider>/<model>, e.g. openrouter/openai/gpt-4o-mini.'
           : 'Passthrough is off: clients can only call the aliases below.'"

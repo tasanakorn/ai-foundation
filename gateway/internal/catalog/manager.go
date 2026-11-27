@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -23,11 +22,11 @@ const (
 
 // Options configure a Manager.
 type Options struct {
-	Store  store.Store
-	Client *http.Client
-	Log    *slog.Logger
-	Mode   string         // config.CatalogDatabase or config.CatalogFile
-	File   *store.Catalog // the file's catalog (FromFile)
+	Store store.Store
+	Env   Env // client, keyring, observer and log for building snapshots
+	Log   *slog.Logger
+	Mode  string         // config.CatalogDatabase or config.CatalogFile
+	File  *store.Catalog // the file's catalog (FromFile)
 	// Path is the config file. File mode watches it every WatchInterval; "" = no watch.
 	Path          string
 	WatchInterval time.Duration
@@ -35,8 +34,7 @@ type Options struct {
 	PollInterval time.Duration
 	// Publish tells the other nodes about a new revision (bus.PublishCatalogChanged). Optional.
 	Publish  func(ctx context.Context, rev int64) error
-	Observer Observer // optional
-	Keyring  *Keyring // decrypts encrypted provider keys; nil = references only
+	Observer Observer // optional: reload counts
 }
 
 // Observer counts reloads (metrics.Gateway).
@@ -47,7 +45,7 @@ type Observer interface {
 // Manager keeps this node's snapshot up to date (spec-0006 sections 3, 5 and 6).
 type Manager struct {
 	st     store.Store
-	client *http.Client
+	env    Env
 	log    *slog.Logger
 	mode   string
 	path   string
@@ -55,7 +53,6 @@ type Manager struct {
 	poll   time.Duration
 	pub    func(ctx context.Context, rev int64) error
 	obs    Observer
-	kr     *Keyring
 	holder *Holder
 
 	reload  sync.Mutex    // one reload at a time
@@ -73,8 +70,8 @@ type Manager struct {
 // first snapshot. It fails when no snapshot can be built: a node never serves without
 // a catalog (spec-0006 section 6).
 func Start(ctx context.Context, o Options) (*Manager, error) {
-	m := &Manager{st: o.Store, client: o.Client, log: o.Log, mode: o.Mode, path: o.Path, watch: o.WatchInterval,
-		poll: o.PollInterval, pub: o.Publish, obs: o.Observer, kr: o.Keyring, trigger: make(chan struct{}, 1), wake: make(chan string, 1)}
+	m := &Manager{st: o.Store, env: o.Env, log: o.Log, mode: o.Mode, path: o.Path, watch: o.WatchInterval,
+		poll: o.PollInterval, pub: o.Publish, obs: o.Observer, trigger: make(chan struct{}, 1), wake: make(chan string, 1)}
 	switch o.Mode {
 	case config.CatalogFile:
 		if _, err := m.syncFile(ctx, o.File); err != nil {
@@ -85,7 +82,7 @@ func Start(ctx context.Context, o Options) (*Manager, error) {
 			return nil, fmt.Errorf("catalog seed: %w", err)
 		}
 	}
-	snap, err := Load(ctx, m.st, m.client, m.kr)
+	snap, err := Load(ctx, m.st, m.env)
 	if err != nil {
 		return nil, err
 	}
@@ -197,12 +194,13 @@ func (m *Manager) Reload(ctx context.Context, source string) error {
 	if rev <= old {
 		return nil
 	}
-	snap, err := Load(ctx, m.st, m.client, m.kr)
+	snap, err := Load(ctx, m.st, m.env)
 	if err != nil {
 		m.observe("error")
 		m.log.Error("catalog reload failed; keeping the last good catalog", "source", source, "revision", old, "new_revision", rev, "err", err)
 		return err
 	}
+	snap.InheritState(m.holder.Snapshot())
 	if m.holder.Offer(snap) {
 		m.observe("ok")
 		m.log.Info("catalog reloaded", "source", source, "old_revision", old, "revision", snap.Revision,
