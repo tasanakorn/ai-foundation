@@ -116,6 +116,43 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 }
 
+// oidc is an admin section with a good public_url and the given providers.
+func oidc(ps string) string {
+	return "admin: {public_url: https://admin.example.com, oidc: {providers: [" + ps + "]}}"
+}
+
+func TestOIDCConfig(t *testing.T) {
+	const db = "database: {url: \"postgres://x\"}\n"
+	c, err := Parse([]byte(db + `admin:
+  public_url: https://admin.example.com/
+  bootstrap: {email: a@b.c, password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA"}
+  oidc:
+    providers:
+      - {name: sso, issuer: "https://idp.example.com/", client_id: c, allowed_groups: [aif-admins]}
+      - {name: local-idp, title: Local, issuer: "http://localhost:8443", client_id: c}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := c.Admin
+	p := a.OIDC.Providers[0]
+	if a.PublicURL != "https://admin.example.com" || !a.PasswordLoginOn() || a.OIDC.SessionTTL != a.SessionTTL ||
+		p.Title != "sso" || p.GroupsClaim != "groups" || len(p.Scopes) != 3 || p.Issuer != "https://idp.example.com/" ||
+		a.OIDC.Providers[1].Title != "Local" || c.NATS.Audit.SubjectPrefix != "aif.audit.v1" {
+		t.Fatalf("defaults: %+v %+v", a, p)
+	}
+}
+
+// A hash from the environment survives ${VAR} expansion and YAML (it has $ and commas).
+func TestPasswordHashFromEnv(t *testing.T) {
+	const hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo+/"
+	t.Setenv("AIF_TEST_HASH", hash)
+	c, err := Parse([]byte("database: {url: \"postgres://x\"}\nadmin:\n  bootstrap:\n    email: a@b.c\n    password_hash: ${AIF_TEST_HASH:-}\n"))
+	if err != nil || c.Admin.Bootstrap.PasswordHash != hash {
+		t.Fatalf("%v %q", err, c.Admin.Bootstrap.PasswordHash)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	const db = "database: {url: \"postgres://x\"}\n"
 	if _, err := Parse([]byte(db)); err != nil {
@@ -165,6 +202,16 @@ func TestValidate(t *testing.T) {
 		"metrics listen":             db + "metrics: {listen: nope}",
 		"dev master key":             db + "admin: {master_key: dev-master-key-0000}",
 		"dev bootstrap password":     db + "admin: {bootstrap: {email: a@b.c, password: dev-admin-password}}",
+		"password and hash":          db + "admin: {bootstrap: {email: a@b.c, password: long-enough-password, password_hash: \"$argon2id$v=19$m=1,t=1,p=1$a$b\"}}",
+		"hash not argon2id":          db + "admin: {bootstrap: {email: a@b.c, password_hash: \"$2a$10$abc\"}}",
+		"oidc without public_url":    db + "admin: {oidc: {providers: [{name: sso, issuer: https://idp.example.com, client_id: c}]}}",
+		"oidc http public_url":       db + "admin: {public_url: http://admin.example.com, oidc: {providers: [{name: sso, issuer: https://idp.example.com, client_id: c}]}}",
+		"oidc bad name":              db + oidc("{name: Big SSO, issuer: https://idp.example.com, client_id: c}"),
+		"oidc no client_id":          db + oidc("{name: sso, issuer: https://idp.example.com}"),
+		"oidc http issuer":           db + oidc("{name: sso, issuer: http://idp.example.com, client_id: c}"),
+		"oidc name twice":            db + oidc("{name: sso, issuer: https://i.example.com, client_id: c}, {name: sso, issuer: https://j.example.com, client_id: c}"),
+		"oidc session_ttl":           db + "admin: {public_url: https://a.example.com, oidc: {session_ttl: 1s}}",
+		"audit subject":              db + "nats: {audit: {subject_prefix: \"aif.>\"}}",
 	}
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {

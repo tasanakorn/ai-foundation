@@ -1,6 +1,7 @@
 package gateway_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,9 +9,14 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"ai-foundation/gateway/internal/admin"
+	"ai-foundation/gateway/internal/auth"
 	"ai-foundation/gateway/internal/config"
+	"ai-foundation/gateway/internal/store"
 )
 
 // browser is one admin UI user: a cookie jar, and Origin set like a real browser does.
@@ -121,36 +127,47 @@ func TestAdminLoginFlow(t *testing.T) {
 
 func TestAdminRolesAndAccounts(t *testing.T) {
 	t.Parallel()
-	e := newEnv(t)
+	idp := newFakeIDP(t)
+	e := newEnv(t, withIDP(idp.provider("sso")))
 	a := e.browser()
 	a.mustLogin(bootEmail, bootPassword)
 	code, me, _ := a.do("GET", "/admin/v1/auth/me", "")
 	var self struct{ User struct{ ID string } }
 	_ = json.Unmarshal([]byte(me), &self)
-	if code != 200 || self.User.ID == "" {
+	if code != 200 || self.User.ID == "" || !strings.Contains(me, `"local":true`) {
 		t.Fatalf("me: %d %s", code, me)
 	}
 
 	for name, body := range map[string]string{
-		"short password": `{"email":"x@example.com","password":"short"}`,
-		"bad email":      `{"email":"not-an-email","password":"long-enough-password"}`,
-		"bad role":       `{"email":"x@example.com","password":"long-enough-password","role":"root"}`,
-		"duplicate":      `{"email":"BOOT@example.com","password":"long-enough-password"}`,
-		"unknown field":  `{"email":"x@example.com","password":"long-enough-password","admin":true}`,
+		"password":      `{"email":"x@example.com","password":"long-enough-password"}`,
+		"bad email":     `{"email":"not-an-email"}`,
+		"bad role":      `{"email":"x@example.com","role":"root"}`,
+		"local account": `{"email":"BOOT@example.com"}`,
+		"unknown field": `{"email":"x@example.com","admin":true}`,
 	} {
 		if code, out, _ := a.do("POST", "/admin/v1/users", body); code != 400 {
 			t.Errorf("%s: %d %s", name, code, out)
 		}
 	}
-	code, body, _ := a.do("POST", "/admin/v1/users", `{"email":"Viewer@Example.com","name":"V","role":"viewer","password":"viewer-password-1"}`)
+	code, body, _ := a.do("POST", "/admin/v1/users", `{"email":"Viewer@Example.com","name":"V","role":"viewer"}`)
 	if code != 201 || !strings.Contains(body, `"email":"viewer@example.com"`) {
 		t.Fatalf("create viewer: %d %s", code, body)
 	}
 	viewerID := userID(t, body)
+	if code, _, _ := a.do("POST", "/admin/v1/users/"+viewerID+"/identities/allow", ""); code != 200 {
+		t.Fatal("allow viewer link")
+	}
+	if code := e.browser().login("viewer@example.com", "anything-long-enough"); code != 401 {
+		t.Fatalf("viewer password login: %d", code)
+	}
+	if code, _, _ := a.do("PATCH", "/admin/v1/users/"+viewerID, `{"password":"long-enough-password"}`); code != 400 {
+		t.Fatalf("set a password: %d", code)
+	}
 
+	idp.as(idpUser{Sub: "viewer", Email: "viewer@example.com", Verified: true})
 	v := e.browser()
-	v.mustLogin("viewer@example.com", "viewer-password-1")
-	for _, path := range []string{"/admin/v1/keys", "/admin/v1/usage/summary", "/admin/v1/models", "/admin/v1/users"} {
+	v.oidcLogin("sso")
+	for _, path := range []string{"/admin/v1/keys", "/admin/v1/usage/summary", "/admin/v1/models", "/admin/v1/users", "/admin/v1/auth/identities"} {
 		if code, _, _ := v.do("GET", path, ""); code != 200 {
 			t.Errorf("viewer GET %s: %d", path, code)
 		}
@@ -158,26 +175,28 @@ func TestAdminRolesAndAccounts(t *testing.T) {
 	if code, _, _ := v.do("POST", "/admin/v1/keys", `{"name":"x"}`); code != 403 {
 		t.Fatalf("viewer create key: %d", code)
 	}
-	if code, _, _ := v.do("POST", "/admin/v1/users", `{"email":"y@example.com","password":"long-enough-password"}`); code != 403 {
+	if code, _, _ := v.do("POST", "/admin/v1/users", `{"email":"y@example.com"}`); code != 403 {
 		t.Fatalf("viewer create user: %d", code)
 	}
-	// Any role may change its own password.
-	if code, out, _ := v.do("POST", "/admin/v1/auth/password", `{"current_password":"viewer-password-1","new_password":"viewer-password-2"}`); code != 204 {
-		t.Fatalf("viewer own password: %d %s", code, out)
+	if code, _, _ := v.do("POST", "/admin/v1/users/"+viewerID+"/identities/allow", ""); code != 403 {
+		t.Fatalf("viewer allows a link: %d", code)
 	}
 
-	// Never lock everyone out.
-	if code, out, _ := a.do("PATCH", "/admin/v1/users/"+self.User.ID, `{"role":"viewer"}`); code != 400 || !strings.Contains(out, "last active admin") {
-		t.Fatalf("demote last admin: %d %s", code, out)
+	// The local account is set in config: no role change, disable, delete or link here.
+	for name, req := range map[string][2]string{
+		"demote":  {"PATCH", `{"role":"viewer"}`},
+		"disable": {"PATCH", `{"disabled":true}`},
+		"delete":  {"DELETE", ""},
+	} {
+		if code, _ := e.do(e.admin.URL, req[0], "/admin/v1/users/"+self.User.ID, masterKey, req[1]); code != 400 {
+			t.Errorf("%s the local account: %d", name, code)
+		}
 	}
-	if code, _, _ := a.do("PATCH", "/admin/v1/users/"+self.User.ID, `{"disabled":true}`); code != 400 {
-		t.Fatalf("disable self: %d", code)
+	if code, _ := e.do(e.admin.URL, "PATCH", "/admin/v1/users/"+self.User.ID, masterKey, `{"name":"Boot 2"}`); code != 200 {
+		t.Fatalf("rename the local account: %d", code)
 	}
-	if code, _, _ := a.do("DELETE", "/admin/v1/users/"+self.User.ID, ""); code != 400 {
-		t.Fatalf("delete self: %d", code)
-	}
-	if code, _ := e.do(e.admin.URL, "DELETE", "/admin/v1/users/"+self.User.ID, masterKey, ""); code != 400 {
-		t.Fatalf("master key deletes last admin: %d", code)
+	if code, _ := e.do(e.admin.URL, "POST", "/admin/v1/users/"+self.User.ID+"/identities/allow", masterKey, ""); code != 400 {
+		t.Fatalf("allow a link for the local account: %d", code)
 	}
 
 	// Disabling ends the viewer's sessions at once.
@@ -187,59 +206,131 @@ func TestAdminRolesAndAccounts(t *testing.T) {
 	if code, _, _ := v.do("GET", "/admin/v1/keys", ""); code != 401 {
 		t.Fatalf("disabled viewer session: %d", code)
 	}
-	if code := v.login("viewer@example.com", "viewer-password-2"); code != 401 {
-		t.Fatalf("disabled viewer login: %d", code)
-	}
 	if code, _, _ := a.do("PATCH", "/admin/v1/users/"+viewerID, `{"disabled":false,"role":"admin"}`); code != 200 {
 		t.Fatalf("enable + promote: %d", code)
 	}
-	v.mustLogin("viewer@example.com", "viewer-password-2")
+	v.oidcLogin("sso")
 	if code, _, _ := v.do("POST", "/admin/v1/keys", `{"name":"x"}`); code != 201 {
 		t.Fatalf("promoted user create key: %d", code)
 	}
-	// Now there are two admins: the first may be demoted, then deleted.
-	if code, _, _ := v.do("PATCH", "/admin/v1/users/"+self.User.ID, `{"role":"viewer"}`); code != 200 {
-		t.Fatalf("demote with another admin: %d", code)
+	// Never lock everyone out: the promoted user is not the last admin, so it may be
+	// demoted, but not by itself into a state with no admin left.
+	if code, _, _ := v.do("PATCH", "/admin/v1/users/"+viewerID, `{"disabled":true}`); code != 400 {
+		t.Fatalf("disable self: %d", code)
 	}
-	if code, _, _ := v.do("DELETE", "/admin/v1/users/"+self.User.ID, ""); code != 204 {
+	if code, _, _ := v.do("DELETE", "/admin/v1/users/"+viewerID, ""); code != 400 {
+		t.Fatalf("delete self: %d", code)
+	}
+	if code, _, _ := a.do("DELETE", "/admin/v1/users/"+viewerID, ""); code != 204 {
 		t.Fatalf("delete user: %d", code)
 	}
-	if code, _, _ := a.do("GET", "/admin/v1/keys", ""); code != 401 {
+	if code, _, _ := v.do("GET", "/admin/v1/keys", ""); code != 401 {
 		t.Fatalf("deleted user's session: %d", code)
 	}
-	if code, _, _ := v.do("GET", "/admin/v1/users/"+self.User.ID, ""); code != 404 {
+	if code, _, _ := a.do("GET", "/admin/v1/users/"+viewerID, ""); code != 404 {
 		t.Fatalf("get deleted user: %d", code)
 	}
 }
 
-func TestAdminPasswordChangeEndsOtherSessions(t *testing.T) {
+func TestAdminLocalAccountFromConfig(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)
 	one, two := e.browser(), e.browser()
 	one.mustLogin(bootEmail, bootPassword)
-	two.mustLogin(bootEmail, bootPassword)
+	if code, out, _ := one.do("POST", "/admin/v1/auth/password", `{"current_password":"`+bootPassword+`","new_password":"new-password-123"}`); code != 403 || !strings.Contains(out, "set in config") {
+		t.Fatalf("password change: %d %s", code, out)
+	}
 
-	if code, _, _ := one.do("POST", "/admin/v1/auth/password", `{"current_password":"nope-nope-nope","new_password":"new-password-123"}`); code != 400 {
-		t.Fatalf("wrong current password: %d", code)
-	}
-	if code, _, _ := one.do("POST", "/admin/v1/auth/password", `{"current_password":"`+bootPassword+`","new_password":"short"}`); code != 400 {
-		t.Fatalf("short new password: %d", code)
-	}
-	if code, _, _ := one.do("POST", "/admin/v1/auth/password", `{"current_password":"`+bootPassword+`","new_password":"new-password-123"}`); code != 204 {
-		t.Fatalf("change password: %d", code)
-	}
+	// A restart with the same password keeps sessions; a new password ends them.
+	e.peer()
 	if code, _, _ := one.do("GET", "/admin/v1/auth/me", ""); code != 200 {
-		t.Fatalf("current session kept: %d", code)
+		t.Fatalf("session after restart with the same password: %d", code)
 	}
-	if code, _, _ := two.do("GET", "/admin/v1/auth/me", ""); code != 401 {
-		t.Fatalf("other session ended: %d", code)
+	p := e.peer(func(c *config.Config) { c.Admin.Bootstrap.Password = "changed-password-1" })
+	if code, _, _ := one.do("GET", "/admin/v1/auth/me", ""); code != 401 {
+		t.Fatalf("session after password change: %d", code)
 	}
+	two = p.browser()
 	if code := two.login(bootEmail, bootPassword); code != 401 {
 		t.Fatalf("old password: %d", code)
 	}
-	two.mustLogin(bootEmail, "new-password-123")
-	if code, _ := e.do(e.admin.URL, "POST", "/admin/v1/auth/password", masterKey, `{"current_password":"x","new_password":"y"}`); code != 400 {
-		t.Fatalf("master key has no password: %d", code)
+	two.mustLogin(bootEmail, "changed-password-1")
+
+	// A hash in config (production) works the same.
+	hash, err := auth.HashPassword("hashed-password-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p = e.peer(func(c *config.Config) { c.Admin.Bootstrap.Password, c.Admin.Bootstrap.PasswordHash = "", hash })
+	if code, _, _ := two.do("GET", "/admin/v1/auth/me", ""); code != 401 {
+		t.Fatalf("session after the hash changed: %d", code)
+	}
+	two = p.browser()
+	two.mustLogin(bootEmail, "hashed-password-1")
+
+	// An old password of another account (from before D42) is ignored.
+	old, _ := auth.HashPassword("old-password-123")
+	now := time.Now().UTC()
+	if err := e.st.CreateAdminUser(context.Background(), &store.AdminUser{ID: "usr_old", Email: "old@example.com", Role: store.RoleAdmin,
+		PasswordHash: old, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if code := p.browser().login("old@example.com", "old-password-123"); code != 401 {
+		t.Fatalf("old password of another account: %d", code)
+	}
+	code, body, _ := two.do("GET", "/admin/v1/users", "")
+	if code != 200 || strings.Count(body, `"local":true`) != 1 || strings.Count(body, `"email"`) != 2 {
+		t.Fatalf("users: %d %s", code, body)
+	}
+}
+
+func TestAdminBreakGlassAudit(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	nc, err := nats.Connect(e.natsURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("aif.audit.v1.breakglass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = nc.Flush()
+	e.browser().mustLogin(bootEmail, bootPassword)
+	for range 3 { // the master key sends one event per minute, not one per call
+		e.do(e.admin.URL, "GET", "/admin/v1/keys", masterKey, "")
+	}
+	var got []map[string]any
+	for {
+		m, err := sub.NextMsg(300 * time.Millisecond)
+		if err != nil {
+			break
+		}
+		var ev map[string]any
+		_ = json.Unmarshal(m.Data, &ev)
+		got = append(got, ev)
+	}
+	if len(got) != 2 || got[0]["method"] != "password" || got[0]["email"] != bootEmail || got[0]["type"] != "breakglass" ||
+		got[1]["method"] != "master_key" || got[0]["node"] == "" || got[0]["ip"] == "" {
+		t.Fatalf("events: %v", got)
+	}
+}
+
+func TestAdminPasswordLoginOff(t *testing.T) {
+	t.Parallel()
+	off := false
+	e := newEnv(t, func(c *config.Config) { c.Admin.PasswordLogin = &off })
+	b := e.browser()
+	if code := b.login(bootEmail, bootPassword); code != 403 {
+		t.Fatalf("password login off: %d", code)
+	}
+	code, body := e.do(e.admin.URL, "GET", "/admin/v1/auth/methods", "", "")
+	if code != 200 || !strings.Contains(body, `"password":false`) || !strings.Contains(body, `"oidc":[]`) {
+		t.Fatalf("methods: %d %s", code, body)
+	}
+	if code, _ := e.do(e.admin.URL, "GET", "/admin/v1/keys", masterKey, ""); code != 200 {
+		t.Fatalf("master key: %d", code)
 	}
 }
 

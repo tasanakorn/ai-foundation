@@ -205,6 +205,28 @@ export interface AdminUser {
   updated_at: string
   last_login_at?: string
   disabled_at?: string
+  /** Until then, the next OIDC sign-in with this email (verified) links the account. */
+  link_allowed_until?: string
+  /** The local account (admin.bootstrap): the only one with a password, set in config. */
+  local: boolean
+}
+
+/** GET /auth/methods (no auth): the sign-in methods that are on. */
+export interface AuthMethods {
+  password: boolean
+  oidc: { name: string, title: string }[]
+}
+
+/** An OIDC login linked to an account (GET /auth/identities, /users/{id}/identities). */
+export interface AdminIdentity {
+  id: string
+  user_id: string
+  provider: string
+  issuer: string
+  subject: string
+  email: string
+  created_at: string
+  last_login_at?: string
 }
 
 /** GET /auth/me and POST /auth/login. user is null for the master key. */
@@ -214,11 +236,11 @@ export interface Me {
   method: 'session' | 'master_key'
 }
 
+/** POST /users: an account that signs in through OIDC (no password). */
 export interface CreateUserInput {
   email: string
   name: string
   role: Role
-  password: string
 }
 
 /** PATCH /users/{id}: only the fields that are set change. */
@@ -226,5 +248,4 @@ export interface UpdateUserInput {
   name?: string
   role?: Role
   disabled?: boolean
-  password?: string
 }

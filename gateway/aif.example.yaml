@@ -26,14 +26,32 @@ admin:
   # "off" disables it. Put TLS in front (reverse proxy) when it is public.
   listen: ${AIF_ADMIN_LISTEN:-127.0.0.1:8081}
   # ui_dir: ./web/.output/public   # serve the built web UI here
-  # People sign in with built-in accounts (email + password). Manage them in the UI or with
-  # `aif admin create-user | reset-password | list-users`.
+  # People sign in through an OIDC identity provider (admin.oidc), or with the one local
+  # account below (break-glass). Add accounts in the UI or with `aif admin create-user`.
   session_ttl: 12h            # browser login lifetime
   cookie_secure: auto         # auto = Secure cookie on HTTPS (or X-Forwarded-Proto: https); always; never
-  # First start only: creates this admin account when no account exists. Change the password after sign-in.
+  # The local account: the only account with a password, for when the IdP is down. Read on
+  # every start; changing the password here and restarting ends its sessions. Every use is
+  # logged and published on aif.audit.v1.breakglass.
   bootstrap:
     email: ${AIF_ADMIN_EMAIL:-}
-    password: ${AIF_ADMIN_PASSWORD:-}
+    password: ${AIF_ADMIN_PASSWORD:-}            # plain, for local development
+    password_hash: ${AIF_ADMIN_PASSWORD_HASH:-}  # production: `aif admin hash-password`; set one of the two
+  password_login: true        # false: the local account's password is off too (OIDC and master key only)
+  # Sign-in through OIDC identity providers (Rauthy, Authentik, Keycloak, Google, ...).
+  # Register <public_url>/admin/v1/auth/oidc/<name>/callback as the redirect URL at the IdP.
+  # public_url: https://admin.example.com
+  # oidc:
+  #   session_ttl: 1h         # sessions from an OIDC sign-in; default session_ttl
+  #   providers:
+  #     - name: sso           # in URLs; a-z, 0-9, -
+  #       title: Company SSO  # button text
+  #       issuer: https://auth.example.com
+  #       client_id: aif-admin
+  #       client_secret: ${AIF_OIDC_SSO_SECRET}
+  #       scopes: [openid, email, profile, groups]
+  #       allowed_groups: [aif-admins]  # only these groups may sign in; use it when the IdP has open sign-up
+  #       # link_by_email: false        # true: a verified email links the first login without an admin step
   # Optional bearer token with the admin role, for scripts and emergency access. Empty = off.
   master_key: ${AIF_MASTER_KEY:-}
 

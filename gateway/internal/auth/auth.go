@@ -1,7 +1,6 @@
-// Package auth is the built-in admin login: accounts with email + password, browser
-// sessions, and roles. It is the first way to sign in. Outside logins ("login with ...")
-// can be added later; they only need to map an identity to an AdminUser and call
-// IssueSession.
+// Package auth is admin sign-in: one local account with a password (break-glass,
+// spec-0001 D42), outside logins through OIDC (oidc.go, D41), browser sessions, and roles.
+// Every way to sign in ends in IssueSession.
 package auth
 
 import (
@@ -27,6 +26,7 @@ var (
 	ErrInvalidCredentials = errors.New("invalid email or password")
 	ErrTooManyAttempts    = errors.New("too many failed sign-in attempts; try again later")
 	ErrNoSession          = errors.New("not signed in")
+	ErrPasswordLoginOff   = errors.New("password sign-in is turned off; sign in with your identity provider")
 )
 
 // InputError is a bad request from the caller (shown to the user as is).
@@ -42,44 +42,89 @@ func inputErr(format string, a ...any) error { return &InputError{Msg: fmt.Sprin
 
 var Roles = []string{store.RoleAdmin, store.RoleViewer}
 
+// Audit is told about every use of the local account's password or of the master key
+// (method "password" or "master_key"). It must not block.
+type Audit func(method, userID, email, ip string)
+
+type Options struct {
+	SessionTTL    time.Duration
+	LocalEmail    string // admin.bootstrap.email; "" = no local account
+	PasswordLogin bool   // admin.password_login
+	Audit         Audit  // optional
+	Log           *slog.Logger
+}
+
 type Service struct {
-	st      store.Store
-	ttl     time.Duration
-	log     *slog.Logger
-	limiter *limiter
-	now     func() time.Time
+	st            store.Store
+	ttl           time.Duration
+	localEmail    string
+	passwordLogin bool
+	audit         Audit
+	log           *slog.Logger
+	limiter       *limiter
+	now           func() time.Time
+
+	mu            sync.Mutex
+	lastMasterKey time.Time // last master-key audit event from this node
 }
 
-func NewService(st store.Store, sessionTTL time.Duration, log *slog.Logger) *Service {
-	return &Service{st: st, ttl: sessionTTL, log: log, limiter: newLimiter(), now: time.Now}
+func NewService(st store.Store, o Options) *Service {
+	if o.Audit == nil {
+		o.Audit = func(string, string, string, string) {}
+	}
+	return &Service{st: st, ttl: o.SessionTTL, localEmail: normalizeEmail(o.LocalEmail), passwordLogin: o.PasswordLogin,
+		audit: o.Audit, log: o.Log, limiter: newLimiter(), now: time.Now}
 }
 
-// TTL is how long a new session lasts.
+// TTL is how long a new password session lasts.
 func (s *Service) TTL() time.Duration { return s.ttl }
+
+// PasswordLogin reports whether the local account may sign in with its password.
+func (s *Service) PasswordLogin() bool { return s.passwordLogin && s.localEmail != "" }
+
+// IsLocal reports whether u is the local account (the only one with a password).
+func (s *Service) IsLocal(u *store.AdminUser) bool {
+	return u != nil && s.localEmail != "" && u.Email == s.localEmail
+}
+
+// Mark sets the Local flag on users for the API.
+func (s *Service) Mark(users ...*store.AdminUser) {
+	for _, u := range users {
+		if u != nil {
+			u.Local = s.IsLocal(u)
+		}
+	}
+}
 
 // ---- sign in ----
 
-// Login checks email + password and starts a session. It returns the session token
-// (the cookie value; only its hash is stored).
+// Login checks the local account's email + password and starts a session. It returns
+// the session token (the cookie value; only its hash is stored). Every other account
+// is refused here, the same way as a wrong password.
 func (s *Service) Login(ctx context.Context, email, password, userAgent, ip string) (string, *store.AdminUser, error) {
+	if !s.PasswordLogin() {
+		return "", nil, ErrPasswordLoginOff
+	}
 	email = normalizeEmail(email)
 	if !s.limiter.allow("email:"+email) || !s.limiter.allow("ip:"+ip) {
 		return "", nil, ErrTooManyAttempts
 	}
-	u, err := s.st.GetAdminUserByEmail(ctx, email)
-	if errors.Is(err, store.ErrNotFound) {
+	var u *store.AdminUser
+	var err error
+	if email == s.localEmail {
+		u, err = s.st.GetAdminUserByEmail(ctx, email)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return "", nil, err
+		}
+	}
+	if u == nil || u.PasswordHash == "" {
 		_, _ = VerifyPassword(dummyHash(), password) // same time as a real check
 		s.fail(email, ip)
 		return "", nil, ErrInvalidCredentials
 	}
+	ok, err := VerifyPassword(u.PasswordHash, password)
 	if err != nil {
-		return "", nil, err
-	}
-	ok := false
-	if u.PasswordHash != "" {
-		if ok, err = VerifyPassword(u.PasswordHash, password); err != nil {
-			s.log.Warn("admin password hash unreadable", "user", u.ID, "err", err)
-		}
+		s.log.Warn("admin password hash unreadable", "user", u.ID, "err", err)
 	}
 	if !ok || u.DisabledAt != nil {
 		s.fail(email, ip)
@@ -93,7 +138,26 @@ func (s *Service) Login(ctx context.Context, email, password, userAgent, ip stri
 	now := s.now().UTC()
 	_ = s.st.SetAdminLastLogin(ctx, u.ID, now)
 	u.LastLoginAt = &now
+	s.log.Warn("break-glass sign-in with the local account", "user", u.ID, "email", u.Email, "ip", ip)
+	s.audit("password", u.ID, u.Email, ip)
+	s.Mark(u)
 	return token, u, nil
+}
+
+// MasterKeyUsed records a master-key call: a warning log each time, an audit event at
+// most once per minute per node (scripts may call often).
+func (s *Service) MasterKeyUsed(ip, method, path string) {
+	s.log.Warn("admin API called with the master key", "ip", ip, "method", method, "path", path)
+	s.mu.Lock()
+	now := s.now()
+	send := now.Sub(s.lastMasterKey) >= time.Minute
+	if send {
+		s.lastMasterKey = now
+	}
+	s.mu.Unlock()
+	if send {
+		s.audit("master_key", "", "", ip)
+	}
 }
 
 func (s *Service) fail(email, ip string) {
@@ -101,23 +165,22 @@ func (s *Service) fail(email, ip string) {
 	s.limiter.fail("ip:" + ip)
 }
 
-// IssueSession starts a session for an already authenticated user.
-// Outside login methods (OIDC, SSO) call this after they verify the identity.
+// IssueSession starts a session (admin.session_ttl) for an already authenticated user.
 func (s *Service) IssueSession(ctx context.Context, u *store.AdminUser, userAgent, ip string) (string, error) {
+	return s.issueSession(ctx, u, userAgent, ip, s.ttl)
+}
+
+func (s *Service) issueSession(ctx context.Context, u *store.AdminUser, userAgent, ip string, ttl time.Duration) (string, error) {
 	if u.DisabledAt != nil {
 		return "", ErrInvalidCredentials
 	}
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	token := "aifs_" + hex.EncodeToString(b[:])
+	token := "aifs_" + randomHex(32)
 	now := s.now().UTC()
 	if len(userAgent) > 256 {
 		userAgent = userAgent[:256]
 	}
 	if err := s.st.CreateAdminSession(ctx, &store.AdminSession{
-		Hash: hashToken(token), UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(s.ttl), UserAgent: userAgent, IP: ip,
+		Hash: hashToken(token), UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(ttl), UserAgent: userAgent, IP: ip,
 	}); err != nil {
 		return "", err
 	}
@@ -147,6 +210,7 @@ func (s *Service) Session(ctx context.Context, token string) (*store.AdminUser, 
 	if u.DisabledAt != nil {
 		return nil, nil, ErrNoSession
 	}
+	s.Mark(u)
 	return u, sess, nil
 }
 
@@ -157,40 +221,42 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return s.st.DeleteAdminSession(ctx, hashToken(token))
 }
 
-// ChangePassword is the signed-in user's own change. Other sessions of the user end;
-// keepSession (the current one) stays.
-func (s *Service) ChangePassword(ctx context.Context, u *store.AdminUser, current, next, keepSession string) error {
-	ok, _ := VerifyPassword(u.PasswordHash, current)
-	if !ok {
-		return inputErr("current password is wrong")
-	}
-	if err := checkPassword(next); err != nil {
-		return err
-	}
-	hash, err := HashPassword(next)
-	if err != nil {
-		return err
-	}
-	u.PasswordHash, u.UpdatedAt = hash, s.now().UTC()
-	if err := s.st.UpdateAdminUser(ctx, u); err != nil {
-		return err
-	}
-	return s.st.DeleteAdminSessions(ctx, u.ID, keepSession)
-}
-
 // ---- accounts ----
 
+func (s *Service) ListUsers(ctx context.Context) ([]store.AdminUser, error) {
+	users, err := s.st.ListAdminUsers(ctx)
+	for i := range users {
+		s.Mark(&users[i])
+	}
+	return users, err
+}
+
+func (s *Service) GetUser(ctx context.Context, id string) (*store.AdminUser, error) {
+	u, err := s.st.GetAdminUser(ctx, id)
+	s.Mark(u)
+	return u, err
+}
+
+const noPasswords = "accounts have no password: they sign in through the identity provider. Only the local account has one, set in config (admin.bootstrap)"
+
+// CreateUserInput is a new OIDC account. Password is only there to give a clear error.
 type CreateUserInput struct {
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	Password string `json:"password"`
+	Email    string  `json:"email"`
+	Name     string  `json:"name"`
+	Role     string  `json:"role"`
+	Password *string `json:"password"`
 }
 
 func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*store.AdminUser, error) {
+	if in.Password != nil {
+		return nil, inputErr(noPasswords)
+	}
 	email := normalizeEmail(in.Email)
 	if err := checkEmail(email); err != nil {
 		return nil, err
+	}
+	if email == s.localEmail {
+		return nil, &InputError{Msg: email + " is the local account, set in config", Err: store.ErrConflict}
 	}
 	if in.Role == "" {
 		in.Role = store.RoleAdmin
@@ -198,16 +264,9 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*store.Ad
 	if !slices.Contains(Roles, in.Role) {
 		return nil, inputErr("role must be one of: %s", strings.Join(Roles, ", "))
 	}
-	if err := checkPassword(in.Password); err != nil {
-		return nil, err
-	}
-	hash, err := HashPassword(in.Password)
-	if err != nil {
-		return nil, err
-	}
 	now := s.now().UTC()
 	u := &store.AdminUser{ID: id.New("usr_"), Email: email, Name: strings.TrimSpace(in.Name), Role: in.Role,
-		PasswordHash: hash, CreatedAt: now, UpdatedAt: now}
+		CreatedAt: now, UpdatedAt: now}
 	if err := s.st.CreateAdminUser(ctx, u); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return nil, &InputError{Msg: "an account with email " + email + " already exists", Err: store.ErrConflict}
@@ -217,7 +276,8 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*store.Ad
 	return u, nil
 }
 
-// UpdateUserInput changes only the fields that are set.
+// UpdateUserInput changes only the fields that are set. Password is only there to give
+// a clear error.
 type UpdateUserInput struct {
 	Name     *string `json:"name"`
 	Role     *string `json:"role"`
@@ -227,9 +287,15 @@ type UpdateUserInput struct {
 
 // UpdateUser is an admin changing an account. actorID is the signed-in admin ("" for the master key).
 func (s *Service) UpdateUser(ctx context.Context, userID, actorID string, in UpdateUserInput) (*store.AdminUser, error) {
+	if in.Password != nil {
+		return nil, inputErr(noPasswords)
+	}
 	u, err := s.st.GetAdminUser(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+	if s.IsLocal(u) && (in.Role != nil || in.Disabled != nil) {
+		return nil, inputErr("the local account is set in config; only its name can change here")
 	}
 	wasActiveAdmin := u.Role == store.RoleAdmin && u.DisabledAt == nil
 	endSessions := false
@@ -254,15 +320,6 @@ func (s *Service) UpdateUser(ctx context.Context, userID, actorID string, in Upd
 			u.DisabledAt = nil
 		}
 	}
-	if in.Password != nil {
-		if err := checkPassword(*in.Password); err != nil {
-			return nil, err
-		}
-		if u.PasswordHash, err = HashPassword(*in.Password); err != nil {
-			return nil, err
-		}
-		endSessions = true
-	}
 	if wasActiveAdmin && (u.Role != store.RoleAdmin || u.DisabledAt != nil) {
 		if err := s.keepOneAdmin(ctx); err != nil {
 			return nil, err
@@ -277,6 +334,7 @@ func (s *Service) UpdateUser(ctx context.Context, userID, actorID string, in Upd
 			return nil, err
 		}
 	}
+	s.Mark(u)
 	return u, nil
 }
 
@@ -288,12 +346,15 @@ func (s *Service) DeleteUser(ctx context.Context, userID, actorID string) error 
 	if err != nil {
 		return err
 	}
+	if s.IsLocal(u) {
+		return inputErr("the local account is set in config; remove admin.bootstrap.email to stop using it")
+	}
 	if u.Role == store.RoleAdmin && u.DisabledAt == nil {
 		if err := s.keepOneAdmin(ctx); err != nil {
 			return err
 		}
 	}
-	return s.st.DeleteAdminUser(ctx, userID) // sessions go with it (ON DELETE CASCADE)
+	return s.st.DeleteAdminUser(ctx, userID) // sessions and links go with it (ON DELETE CASCADE)
 }
 
 // keepOneAdmin fails when the change would leave no active admin account.
@@ -308,30 +369,93 @@ func (s *Service) keepOneAdmin(ctx context.Context) error {
 	return nil
 }
 
-// ResetPassword sets a new password by email and ends all sessions (CLI recovery).
-func (s *Service) ResetPassword(ctx context.Context, email, password string) (*store.AdminUser, error) {
-	u, err := s.st.GetAdminUserByEmail(ctx, normalizeEmail(email))
-	if err != nil {
-		return nil, err
-	}
-	return s.UpdateUser(ctx, u.ID, "", UpdateUserInput{Password: &password})
-}
-
-// Bootstrap creates the first admin account when there is none yet. It is safe when
-// several nodes start at once: the unique email lets only one create it.
-func (s *Service) Bootstrap(ctx context.Context, b config.AdminBootstrap) (bool, error) {
-	if b.Email == "" {
+// SyncLocal makes the local account match config (D42): created if missing, role admin,
+// enabled, and the password from b. When the password changes, its sessions end. It is
+// safe when several nodes start at once. It also reports old passwords of other accounts,
+// which are ignored from now on.
+func (s *Service) SyncLocal(ctx context.Context, b config.AdminBootstrap) (created bool, err error) {
+	email := normalizeEmail(b.Email)
+	if email == "" {
 		return false, nil
 	}
-	users, err := s.st.ListAdminUsers(ctx)
-	if err != nil || len(users) > 0 {
+	if email != s.localEmail {
+		return false, fmt.Errorf("local account %s does not match the service (%s)", email, s.localEmail)
+	}
+	u, err := s.st.GetAdminUserByEmail(ctx, email)
+	if errors.Is(err, store.ErrNotFound) {
+		hash, err := s.wantHash(b, "")
+		if err != nil {
+			return false, err
+		}
+		now := s.now().UTC()
+		u = &store.AdminUser{ID: id.New("usr_"), Email: email, Name: strings.TrimSpace(b.Name), Role: store.RoleAdmin,
+			PasswordHash: hash, CreatedAt: now, UpdatedAt: now}
+		err = s.st.CreateAdminUser(ctx, u)
+		if err == nil {
+			s.reportOldPasswords(ctx)
+			return true, nil
+		}
+		if !errors.Is(err, store.ErrConflict) {
+			return false, err
+		}
+		if u, err = s.st.GetAdminUserByEmail(ctx, email); err != nil { // another node made it
+			return false, err
+		}
+	} else if err != nil {
 		return false, err
 	}
-	_, err = s.CreateUser(ctx, CreateUserInput{Email: b.Email, Name: b.Name, Role: store.RoleAdmin, Password: b.Password})
-	if errors.Is(err, store.ErrConflict) {
-		return false, nil // another node won
+	hash, err := s.wantHash(b, u.PasswordHash)
+	if err != nil {
+		return false, err
 	}
-	return err == nil, err
+	newPassword := hash != u.PasswordHash
+	if newPassword || u.Role != store.RoleAdmin || u.DisabledAt != nil {
+		u.PasswordHash, u.Role, u.DisabledAt, u.UpdatedAt = hash, store.RoleAdmin, nil, s.now().UTC()
+		if err := s.st.UpdateAdminUser(ctx, u); err != nil {
+			return false, err
+		}
+	}
+	if newPassword {
+		if err := s.st.DeleteAdminSessions(ctx, u.ID, ""); err != nil {
+			return false, err
+		}
+		s.log.Warn("local account password changed from config; its sessions ended", "email", email)
+	}
+	s.reportOldPasswords(ctx)
+	return false, nil
+}
+
+// wantHash is the hash the local account should have. With a plain password, a stored
+// hash that already matches is kept, so a restart does not end sessions.
+func (s *Service) wantHash(b config.AdminBootstrap, stored string) (string, error) {
+	if b.PasswordHash != "" {
+		if _, err := VerifyPassword(b.PasswordHash, ""); err != nil {
+			return "", fmt.Errorf("admin.bootstrap.password_hash: %w", err)
+		}
+		return b.PasswordHash, nil
+	}
+	if stored != "" {
+		if ok, _ := VerifyPassword(stored, b.Password); ok {
+			return stored, nil
+		}
+	}
+	return HashPassword(b.Password)
+}
+
+func (s *Service) reportOldPasswords(ctx context.Context) {
+	users, err := s.st.ListAdminUsers(ctx)
+	if err != nil {
+		return
+	}
+	n := 0
+	for _, u := range users {
+		if u.PasswordHash != "" && !s.IsLocal(&u) {
+			n++
+		}
+	}
+	if n > 0 {
+		s.log.Warn("other admin accounts still have an old password; it is ignored, they must sign in through OIDC", "accounts", n)
+	}
 }
 
 func (s *Service) HasUsers(ctx context.Context) (bool, error) {
@@ -340,6 +464,14 @@ func (s *Service) HasUsers(ctx context.Context) (bool, error) {
 }
 
 // ---- helpers ----
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err) // crypto/rand does not fail on supported platforms
+	}
+	return hex.EncodeToString(b)
+}
 
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
@@ -356,7 +488,8 @@ func checkEmail(email string) error {
 	return nil
 }
 
-func checkPassword(p string) error {
+// CheckPassword checks a new local password (aif admin hash-password).
+func CheckPassword(p string) error {
 	switch {
 	case len(p) < config.MinPasswordLen:
 		return inputErr("password must be at least %d characters", config.MinPasswordLen)

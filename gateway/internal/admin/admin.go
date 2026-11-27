@@ -1,8 +1,8 @@
 // Package admin is the admin REST API. It is the main integration point
 // for systems built on top (portals, billing, tenant managers) in any language.
 //
-// Callers sign in with a built-in account (session cookie, see auth.go) or send the
-// optional master key as a bearer token (scripts, emergency access).
+// Callers sign in through OIDC (oidc.go) or with the local account (session cookie,
+// see auth.go), or send the optional master key as a bearer token (scripts, emergency access).
 package admin
 
 import (
@@ -30,6 +30,8 @@ import (
 type Handler struct {
 	keys         *keys.Service
 	auth         *auth.Service
+	oidc         *auth.OIDC // nil when admin.oidc has no providers
+	oidcTTL      time.Duration
 	st           store.Store
 	routes       router.Source
 	public       http.Handler
@@ -44,6 +46,8 @@ type Handler struct {
 type Options struct {
 	Keys         *keys.Service
 	Auth         *auth.Service
+	OIDC         *auth.OIDC    // optional
+	OIDCTTL      time.Duration // session lifetime after an OIDC sign-in
 	Store        store.Store
 	Router       router.Source
 	Public       http.Handler // the /v1 handler, for the playground
@@ -56,7 +60,7 @@ type Options struct {
 }
 
 func New(o Options) *Handler {
-	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, routes: o.Router, public: o.Public, masterKey: o.MasterKey,
+	return &Handler{keys: o.Keys, auth: o.Auth, oidc: o.OIDC, oidcTTL: o.OIDCTTL, st: o.Store, routes: o.Router, public: o.Public, masterKey: o.MasterKey,
 		cookieSecure: o.CookieSecure, uiDir: o.UIDir, clientIP: o.ClientIP, nodeID: o.NodeID, log: o.Log}
 }
 
@@ -65,19 +69,28 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	// Sign-in endpoints. login has no auth; the others need a signed-in caller.
+	// Sign-in endpoints. methods, login and the OIDC redirects have no auth; the others
+	// need a signed-in caller.
+	mux.HandleFunc("GET /admin/v1/auth/methods", h.methods)
+	mux.HandleFunc("GET /admin/v1/auth/oidc/{name}/start", h.oidcStart)
+	mux.HandleFunc("GET /admin/v1/auth/oidc/{name}/callback", h.oidcCallback)
 	mux.Handle("POST /admin/v1/auth/login", h.sameOrigin(http.HandlerFunc(h.login)))
 	mux.Handle("POST /admin/v1/auth/logout", h.sameOrigin(http.HandlerFunc(h.logout)))
 	api := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, h.authenticate(fn, false)) }
 	self := func(pattern string, fn http.HandlerFunc) { mux.Handle(pattern, h.authenticate(fn, true)) } // any role
 	self("GET /admin/v1/auth/me", h.me)
 	self("POST /admin/v1/auth/password", h.changePassword)
+	self("GET /admin/v1/auth/identities", h.myLinks)
+	self("DELETE /admin/v1/auth/identities/{id}", h.deleteMyLink)
 
 	api("GET /admin/v1/users", h.listUsers)
 	api("POST /admin/v1/users", h.createUser)
 	api("GET /admin/v1/users/{id}", h.getUser)
 	api("PATCH /admin/v1/users/{id}", h.updateUser)
 	api("DELETE /admin/v1/users/{id}", h.deleteUser)
+	api("GET /admin/v1/users/{id}/identities", h.userLinks)
+	api("DELETE /admin/v1/users/{id}/identities/{identity_id}", h.deleteUserLink)
+	api("POST /admin/v1/users/{id}/identities/allow", h.allowLink)
 
 	// Playground: any role; it changes no admin state and needs a real API key.
 	self("POST /admin/v1/playground/chat/completions", h.playground)

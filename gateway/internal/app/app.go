@@ -34,6 +34,7 @@ type App struct {
 	Catalogs *catalog.Manager // keeps Catalog up to date
 	Keys     *keys.Service
 	Auth     *auth.Service
+	OIDC     *auth.OIDC // nil without admin.oidc providers
 	Recorder *metering.Recorder
 	Bus      *bus.Bus
 	Metrics  *metrics.Gateway // served on metrics.listen when that is on
@@ -46,9 +47,17 @@ type App struct {
 }
 
 // New builds one gateway node. The caller owns st and nb and closes them after Close.
-// It also creates the first admin account from admin.bootstrap when none exists.
+// It also makes the local admin account match admin.bootstrap (D42).
 func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, log *slog.Logger) (*App, error) {
-	a := &App{Keys: keys.NewService(st), Auth: auth.NewService(st, cfg.Admin.SessionTTL, log), Bus: nb}
+	audit := func(method, userID, email, ip string) {
+		if err := nb.PublishBreakGlass(bus.BreakGlass{Method: method, UserID: userID, Email: email, IP: ip}); err != nil {
+			log.Warn("breakglass event not published", "err", err)
+		}
+	}
+	a := &App{Keys: keys.NewService(st), Bus: nb, Auth: auth.NewService(st, auth.Options{
+		SessionTTL: cfg.Admin.SessionTTL, LocalEmail: cfg.Admin.Bootstrap.Email, PasswordLogin: cfg.Admin.PasswordLoginOn(),
+		Audit: audit, Log: log,
+	})}
 
 	// Key revocation reaches every node through NATS.
 	if err := nb.OnKeyRevoked(a.Keys.Forget); err != nil {
@@ -155,7 +164,8 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 			stop()
 			return nil, err
 		}
-		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Catalog, Public: a.Public,
+		a.OIDC = auth.NewOIDC(ctx, a.Auth, st, cfg.Admin, &http.Client{Timeout: 15 * time.Second}, log)
+		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, OIDC: a.OIDC, OIDCTTL: cfg.Admin.OIDC.SessionTTL, Store: st, Router: a.Catalog, Public: a.Public,
 			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir,
 			ClientIP: ips, NodeID: nb.NodeID, Log: log}).Routes()
 	}
@@ -208,20 +218,18 @@ func (a *App) Close(ctx context.Context) error {
 }
 
 func (a *App) bootstrapAdmin(ctx context.Context, c config.Admin, log *slog.Logger) error {
-	created, err := a.Auth.Bootstrap(ctx, c.Bootstrap)
+	created, err := a.Auth.SyncLocal(ctx, c.Bootstrap)
 	if err != nil {
 		return fmt.Errorf("admin.bootstrap: %w", err)
 	}
 	if created {
-		log.Info("created the first admin account from admin.bootstrap; change its password after sign-in", "email", c.Bootstrap.Email)
-		return nil
+		log.Info("created the local admin account from admin.bootstrap", "email", c.Bootstrap.Email)
 	}
-	has, err := a.Auth.HasUsers(ctx)
-	if err != nil {
-		return err
+	if c.Bootstrap.Email != "" && !c.PasswordLoginOn() {
+		log.Info("admin.password_login is off: the local account cannot sign in with its password")
 	}
-	if !has && c.MasterKey == "" {
-		log.Warn("no admin account and no master key: nobody can sign in. Set admin.bootstrap or run `aif admin create-user`")
+	if (c.Bootstrap.Email == "" || !c.PasswordLoginOn()) && len(c.OIDC.Providers) == 0 && c.MasterKey == "" {
+		log.Warn("no way to sign in to the admin API: set admin.bootstrap, admin.oidc or admin.master_key")
 	}
 	return nil
 }

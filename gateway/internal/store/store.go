@@ -116,18 +116,21 @@ const (
 	RoleViewer = "viewer"
 )
 
-// AdminUser is a built-in admin account (email + password). Outside logins
-// ("login with ...") can map to these accounts later without a schema rewrite.
+// AdminUser is an admin account. One of them, the local account (D42), has a password;
+// the others sign in through OIDC (AdminIdentity).
 type AdminUser struct {
 	ID           string     `json:"id"`
 	Email        string     `json:"email"` // stored lowercase; unique
 	Name         string     `json:"name"`
 	Role         string     `json:"role"`
-	PasswordHash string     `json:"-"` // argon2id PHC string; empty = password login off
+	PasswordHash string     `json:"-"` // argon2id PHC string; used only for the local account
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 	DisabledAt   *time.Time `json:"disabled_at,omitempty"`
+	// LinkAllowedUntil: until then, the next OIDC login with this email (verified) links the account.
+	LinkAllowedUntil *time.Time `json:"link_allowed_until,omitempty"`
+	Local            bool       `json:"local"` // the local account; set by auth, not stored
 }
 
 // AdminSession is a browser login. Hash is the SHA-256 of the cookie value; the value itself is never stored.
@@ -138,6 +141,29 @@ type AdminSession struct {
 	ExpiresAt time.Time
 	UserAgent string
 	IP        string
+}
+
+// AdminIdentity links an OIDC login (issuer + subject) to an admin account (spec-0001 section 6.3).
+type AdminIdentity struct {
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	Provider    string     `json:"provider"` // config name of the IdP when it was linked
+	Issuer      string     `json:"issuer"`
+	Subject     string     `json:"subject"`
+	Email       string     `json:"email"` // as the IdP reported it at the last login
+	CreatedAt   time.Time  `json:"created_at"`
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+}
+
+// OIDCFlow is one OIDC sign-in in progress. IDHash is the SHA-256 of the flow cookie.
+type OIDCFlow struct {
+	IDHash       string
+	Provider     string
+	State        string
+	Nonce        string
+	PKCEVerifier string
+	LinkUserID   string // set when a signed-in user links another IdP
+	ExpiresAt    time.Time
 }
 
 // Catalog is the routing catalog in the database (spec-0006): providers with their
@@ -275,6 +301,21 @@ type Store interface {
 	DeleteAdminSession(ctx context.Context, hash string) error
 	DeleteAdminSessions(ctx context.Context, userID, exceptHash string) error
 	DeleteExpiredAdminSessions(ctx context.Context, now time.Time) error
+
+	// AllowAdminLink sets (until != nil) or clears the one-time link allowance.
+	AllowAdminLink(ctx context.Context, userID string, until *time.Time) error
+	// ClaimAdminLink clears the allowance and reports whether it was still open at now (one use).
+	ClaimAdminLink(ctx context.Context, userID string, now time.Time) (bool, error)
+	CreateAdminIdentity(ctx context.Context, i *AdminIdentity) error // ErrConflict when issuer + subject is linked
+	GetAdminIdentity(ctx context.Context, issuer, subject string) (*AdminIdentity, error)
+	ListAdminIdentities(ctx context.Context, userID string) ([]AdminIdentity, error)
+	DeleteAdminIdentity(ctx context.Context, userID, id string) error // ErrNotFound when not that user's
+	SetAdminIdentityLogin(ctx context.Context, id, email string, at time.Time) error
+
+	// CreateOIDCFlow stores a flow and deletes expired ones.
+	CreateOIDCFlow(ctx context.Context, f *OIDCFlow) error
+	// TakeOIDCFlow deletes and returns a flow that has not expired (one use).
+	TakeOIDCFlow(ctx context.Context, idHash string, now time.Time) (*OIDCFlow, error)
 
 	// GetCatalog returns the whole catalog as one consistent read.
 	GetCatalog(ctx context.Context) (*Catalog, error)

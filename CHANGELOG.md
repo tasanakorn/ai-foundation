@@ -6,6 +6,20 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+Admin sign-in through OIDC, and one local account (change-0013). Upgrade notes: **breaking**. Migration v9 runs at startup and only adds a column and two tables; going back needs the manual SQL in change-0013 section 5. Only the account in `admin.bootstrap` can sign in with a password after the upgrade: before upgrading, set up an identity provider in `admin.oidc` and, after the upgrade, allow a login link for each other account on the Admins page.
+
+### Added
+
+1. Sign-in to the admin UI and API through any OIDC identity provider (change-0013, spec-0001 section 6.3, D41): `admin.oidc.providers[]`, `admin.public_url`, `admin.oidc.session_ttl`. 2FA, passkeys and Google login come from the IdP. A login works only for an existing, active account linked to it (`issuer` + `sub`): an admin allows a one-time link for 24 hours (`POST /admin/v1/users/{id}/identities/allow`), or `link_by_email: true` for an IdP whose users you control. `allowed_groups` keeps out IdP users who are not in a group. New endpoints: `GET /admin/v1/auth/methods`, `GET /admin/v1/auth/oidc/{name}/start` and `/callback`, `GET|DELETE /admin/v1/auth/identities`, `GET|DELETE /admin/v1/users/{id}/identities`.
+2. NATS event `aif.audit.v1.breakglass` on each password sign-in of the local account, and at most once a minute per node for the master key (`nats.audit.subject_prefix`).
+3. `admin.bootstrap.password_hash` (`AIF_ADMIN_PASSWORD_HASH`) and `aif admin hash-password`, so production needs no plain password in env. `admin.password_login: false` turns the password off.
+
+### Changed
+
+1. **Breaking:** one local account (D42). Only the account whose email is `admin.bootstrap.email` has a password. It is read on every start: created if missing, kept `admin`, and a new password from config ends its sessions. The API cannot change its role, disable or delete it. Other accounts have no password: `password` in `POST` or `PATCH /admin/v1/users` returns `400`, `POST /admin/v1/auth/password` returns `403`, and old passwords of other accounts are ignored (not deleted).
+2. **Breaking:** `aif admin reset-password` is removed; `aif admin create-user` makes an account without a password.
+3. User objects have `local` and `link_allowed_until`.
+
 ## [0.4.0] - 2026-11-27
 
 Shared provider account state across gateway nodes (change-0012). Upgrade notes: no database migration. Nodes need NATS JetStream for the shared state (the first node creates the bucket); without it a node logs a warning and keeps its own state as in 0.3.0. During a rolling upgrade, 0.3.0 nodes neither send nor read the shared state. Going back to 0.3.0 needs no data change; the bucket can be left or deleted.

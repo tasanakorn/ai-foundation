@@ -7,6 +7,12 @@ const toast = useToast()
 const { me, canWrite } = useSession()
 
 const { data, status, refresh } = await useAsyncData('users', () => api<ListResponse<AdminUser>>('/users'))
+const route = useRoute()
+onMounted(() => {
+  if (route.query.linked) toast.add({ title: 'Login linked', description: 'You can now sign in with it.', color: 'success' })
+})
+
+const linkOpen = (u: AdminUser) => !!u.link_allowed_until && new Date(u.link_allowed_until) > new Date()
 
 const roleItems = [
   { label: 'Admin: full access', value: 'admin' },
@@ -38,13 +44,26 @@ async function update(u: AdminUser, body: UpdateUserInput, done: string) {
   }
 }
 
+async function allowLink(u: AdminUser) {
+  try {
+    await api(`/users/${u.id}/identities/allow`, { method: 'POST' })
+    toast.add({ title: `Link allowed for ${u.email}`, description: 'Within 24 hours, their next identity provider sign-in with this email (verified) links the account.', color: 'success' })
+    refresh()
+  }
+  catch (err) {
+    toast.add({ title: 'Could not allow a link', description: apiErrorMessage(err), color: 'error' })
+  }
+}
+
 function actions(u: AdminUser): DropdownMenuItem[][] {
+  if (u.local) return [[{ label: 'Edit name', icon: 'i-lucide-pencil', onSelect: () => openEdit(u) }]]
   const other: Role = u.role === 'admin' ? 'viewer' : 'admin'
   return [
     [
       { label: 'Edit name', icon: 'i-lucide-pencil', onSelect: () => openEdit(u) },
       { label: `Make ${other}`, icon: 'i-lucide-shield', onSelect: () => update(u, { role: other }, `${u.email} is now ${other}`) },
-      { label: 'Set password', icon: 'i-lucide-lock-keyhole', onSelect: () => openPassword(u) },
+      { label: 'Logins', icon: 'i-lucide-link', onSelect: () => { loginsUser.value = u } },
+      { label: 'Allow a login link (24h)', icon: 'i-lucide-link-2', onSelect: () => allowLink(u) },
     ],
     isSelf(u)
       ? []
@@ -61,18 +80,19 @@ function actions(u: AdminUser): DropdownMenuItem[][] {
 
 const createOpen = ref(false)
 const creating = ref(false)
-const form = reactive<CreateUserInput>({ email: '', name: '', role: 'admin', password: '' })
+const form = reactive<CreateUserInput>({ email: '', name: '', role: 'admin' })
 
 function openCreate() {
-  Object.assign(form, { email: '', name: '', role: 'admin', password: '' })
+  Object.assign(form, { email: '', name: '', role: 'admin' })
   createOpen.value = true
 }
 
 async function create() {
   creating.value = true
   try {
-    await api('/users', { method: 'POST', body: { ...form, email: form.email.trim(), name: form.name.trim() } })
-    toast.add({ title: `Created ${form.email}`, description: 'Share the password in a safe way. They can change it after sign-in.', color: 'success' })
+    const u = await api<AdminUser>('/users', { method: 'POST', body: { ...form, email: form.email.trim(), name: form.name.trim() } })
+    await api(`/users/${u.id}/identities/allow`, { method: 'POST' })
+    toast.add({ title: `Created ${u.email}`, description: 'Ask them to sign in with the identity provider within 24 hours; that links the account.', color: 'success' })
     createOpen.value = false
     refresh()
   }
@@ -99,25 +119,10 @@ async function saveName() {
   if (editing.value && await update(editing.value, { name: editName.value }, 'Name saved')) editing.value = null
 }
 
-// ---- set password ----
+// ---- logins ----
 
-const pwUser = ref<AdminUser | null>(null)
-const pwValue = ref('')
-const pwOpen = computed({ get: () => pwUser.value !== null, set: (v) => { if (!v) pwUser.value = null } })
-
-function openPassword(u: AdminUser) {
-  pwUser.value = u
-  pwValue.value = ''
-}
-
-async function savePassword() {
-  if (!pwUser.value) return
-  const u = pwUser.value
-  if (await update(u, { password: pwValue.value }, `Password set for ${u.email}; their sessions were signed out`)) {
-    pwUser.value = null
-    if (isSelf(u)) navigateTo('/login')
-  }
-}
+const loginsUser = ref<AdminUser | null>(null)
+const loginsOpen = computed({ get: () => loginsUser.value !== null, set: (v) => { if (!v) loginsUser.value = null } })
 
 // ---- delete ----
 
@@ -166,6 +171,7 @@ async function remove() {
         <template #email-cell="{ row }">
           <span class="font-medium">{{ row.original.email }}</span>
           <UBadge v-if="isSelf(row.original)" label="you" size="sm" color="primary" variant="subtle" class="ms-2" />
+          <UBadge v-if="row.original.local" label="local, break-glass" size="sm" color="warning" variant="subtle" class="ms-2" />
         </template>
         <template #name-cell="{ row }">
           {{ row.original.name || '—' }}
@@ -179,6 +185,7 @@ async function remove() {
             :color="row.original.disabled_at ? 'warning' : 'success'"
             variant="subtle"
           />
+          <UBadge v-if="linkOpen(row.original)" label="Link allowed" color="info" variant="subtle" class="ms-2" />
         </template>
         <template #actions-cell="{ row }">
           <UDropdownMenu v-if="canWrite" :items="actions(row.original)" :content="{ align: 'end' }">
@@ -189,7 +196,7 @@ async function remove() {
     </template>
   </UDashboardPanel>
 
-  <UModal v-model:open="createOpen" title="New admin account" description="They sign in with this email and password.">
+  <UModal v-model:open="createOpen" title="New admin account" description="They sign in through the identity provider with this email. The account has no password.">
     <template #body>
       <form id="create-user" class="space-y-4" @submit.prevent="create">
         <UFormField label="Email" required>
@@ -200,9 +207,6 @@ async function remove() {
         </UFormField>
         <UFormField label="Role">
           <USelect v-model="form.role" :items="roleItems" class="w-full" />
-        </UFormField>
-        <UFormField label="Password" help="At least 12 characters." required>
-          <UInput v-model="form.password" type="password" autocomplete="new-password" class="w-full" />
         </UFormField>
       </form>
     </template>
@@ -230,25 +234,7 @@ async function remove() {
     </template>
   </UModal>
 
-  <UModal
-    v-model:open="pwOpen"
-    :title="`Set password for ${pwUser?.email}`"
-    description="All their sessions are signed out."
-  >
-    <template #body>
-      <form id="set-password" @submit.prevent="savePassword">
-        <UFormField label="New password" help="At least 12 characters.">
-          <UInput v-model="pwValue" type="password" autocomplete="new-password" class="w-full" autofocus />
-        </UFormField>
-      </form>
-    </template>
-    <template #footer>
-      <div class="flex w-full justify-end gap-2">
-        <UButton label="Cancel" color="neutral" variant="outline" @click="pwUser = null" />
-        <UButton type="submit" form="set-password" label="Set password" />
-      </div>
-    </template>
-  </UModal>
+  <LoginsModal v-model:open="loginsOpen" :user="loginsUser" />
 
   <UModal
     v-model:open="deleteOpen"

@@ -5,7 +5,7 @@ A small, fast LLM gateway. Think "minimal LiteLLM / OpenRouter core" in one Go b
 1. One OpenAI-compatible API in front of OpenRouter, Anthropic (Claude API) and local LLMs (llama.cpp, vLLM).
 2. API keys with owner labels (tenant, app, end user).
 3. Token and cost metering per request, including streams.
-4. Built-in admin accounts (email + password, admin / viewer roles), admin API and web UI.
+4. Admin sign-in through any OIDC identity provider (2FA, passkeys and Google login come from the IdP), plus one local break-glass account with a password; admin / viewer roles, admin API and web UI.
 5. Everything else plugs in from outside over NATS (required): usage events, a pre-request hook (allow / deny / modify), and key revocation across nodes.
 6. Backing services: PostgreSQL and NATS (JetStream), both required.
 
@@ -50,7 +50,7 @@ make dev                 # Postgres + NATS (Docker), then gateway + web (+ llama
 3. The gateway needs PostgreSQL and NATS and exits at startup without them.
 4. Running them yourself: `python scripts/dev.py --no-services` with `DATABASE_URL` and `NATS_URL` set.
 5. **Playground** (admin UI → Playground): paste an API key, pick a model, and chat with streaming. Each message takes the real `/v1` path and shows tokens, time to first token, cost and the request ID.
-6. The dev admin account is created on the first start only (`AIF_ADMIN_EMAIL`, `AIF_ADMIN_PASSWORD`). Manage accounts on the Admins page or with `aif admin create-user | reset-password | list-users`.
+6. The dev admin account is the local account (`AIF_ADMIN_EMAIL`, `AIF_ADMIN_PASSWORD`), read on every start. It is the only account with a password; other accounts sign in through an OIDC identity provider (`admin.oidc`). Manage accounts on the Admins page or with `aif admin create-user | list-users`.
 
 Dev models (`gateway/aif.dev.yaml`): `mini` → OpenRouter `openai/gpt-4o-mini`, `local` → llama.cpp, `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5` → Claude API (needs `ANTHROPIC_API_KEY`). Passthrough is on, so `openrouter/<any model>` works too.
 
@@ -125,7 +125,10 @@ make build    # web/.output/public + gateway/bin/aif (version from the tag)
 1. Copy `gateway/aif.example.yaml` to `aif.yaml` and edit it.
 2. Run PostgreSQL and set `DATABASE_URL`. Migrations run at startup.
 3. Run NATS with JetStream (`nats-server --jetstream`) and set `nats.url`.
-4. Create the first admin: set `AIF_ADMIN_EMAIL` and `AIF_ADMIN_PASSWORD` for the first start, or run `aif admin create-user -config aif.yaml -email you@example.com`.
+4. Admin sign-in ([spec-0001](docs/specs/spec-0001-gateway-core-architecture.md) sections 6.1 and 6.3):
+   1. The local account (break-glass): set `AIF_ADMIN_EMAIL` and `AIF_ADMIN_PASSWORD_HASH` (make it with `aif admin hash-password`). It is the only account with a password, read on every start. Every use is logged and published on `aif.audit.v1.breakglass`.
+   2. Everyone else: add an OIDC identity provider in `admin.oidc` with `admin.public_url`, and register `<public_url>/admin/v1/auth/oidc/<name>/callback` at the IdP. Add each person on the Admins page (or `aif admin create-user`); their first sign-in within 24 hours links the account. Use `allowed_groups` when the IdP also has users who sign up by themselves.
+   3. Once OIDC works, you may set `admin.password_login: false`. Keep `admin.master_key` empty unless scripts need it.
 5. Set `admin.ui_dir` to the built `web/.output/public` to serve the UI on the admin port.
 6. `aif serve -config aif.yaml`. The admin port listens on `127.0.0.1:8081` by default; set `AIF_ADMIN_LISTEN=0.0.0.0:8081` (or `admin.listen`) for public access, behind TLS (`admin.cookie_secure: auto` marks the cookie Secure on HTTPS). `/healthz` is 503 while NATS or PostgreSQL is down.
 7. Behind a reverse proxy (ingress, CDN, load balancer), set `server.trusted_proxies` (`AIF_TRUSTED_PROXIES`) to the proxy addresses and `server.client_ip_header` if it is not `X-Forwarded-For`. Otherwise every admin sign-in looks like it comes from the proxy, and the per-IP sign-in throttle hits everyone at once. Make the proxy the only way in: a client that reaches the gateway directly can set the header too.

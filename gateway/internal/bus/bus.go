@@ -6,6 +6,7 @@
 //	<usage.subject_prefix>.<tenant>.<app>   one JSON UsageRecord per request (JetStream stream)
 //	<control.subject_prefix>.key_revoked      {"type","id","node","at"}; every node drops the key
 //	<control.subject_prefix>.catalog_changed  {"type","revision","node","at"}; every node reloads the catalog
+//	<audit.subject_prefix>.breakglass         {"type","method","user_id","email","ip","node","at"}; the local account or master key was used
 //	<hooks.pre_request.subject>             request/reply; see package hook
 //	KV bucket <state.bucket>                provider account state, shared by all nodes; see AccountSync
 package bus
@@ -173,6 +174,29 @@ type ControlEvent struct {
 	ID   string    `json:"id"`
 	Node string    `json:"node"`
 	At   time.Time `json:"at"`
+}
+
+// BreakGlass is the payload of <audit.subject_prefix>.breakglass (spec-0001 section 6.1):
+// someone used the local account's password or the master key.
+type BreakGlass struct {
+	Type   string    `json:"type"`   // always "breakglass"
+	Method string    `json:"method"` // "password" or "master_key"
+	UserID string    `json:"user_id,omitempty"`
+	Email  string    `json:"email,omitempty"`
+	IP     string    `json:"ip"`
+	Node   string    `json:"node"`
+	At     time.Time `json:"at"`
+}
+
+// PublishBreakGlass sends a break-glass event. Core pub/sub: a listener that is down
+// misses it, and the warning log line stays the record.
+func (b *Bus) PublishBreakGlass(ev BreakGlass) error {
+	ev.Type, ev.Node, ev.At = "breakglass", b.NodeID, time.Now().UTC()
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	return b.nc.Publish(b.cfg.Audit.SubjectPrefix+".breakglass", data)
 }
 
 func (b *Bus) controlSubject(event string) string { return b.cfg.Control.SubjectPrefix + "." + event }
