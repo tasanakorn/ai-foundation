@@ -1,6 +1,6 @@
 # Change
 
-Records of changes that shipped: what changed, why, and how to roll back.
+One record per change: what changes, why, the impact, and how to roll back. Write it **first**, as `draft`, before any code; set it to `applied` when it ships ([workflow](../workflow.md)).
 
 ## 1. File names
 
