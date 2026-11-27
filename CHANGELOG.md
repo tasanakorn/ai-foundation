@@ -6,6 +6,8 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-27
+
 Admin sign-in through OIDC, and one local account (change-0013). Upgrade notes: **breaking**. Migration v9 runs at startup and only adds a column and two tables; going back needs the manual SQL in change-0013 section 5. Only the account in `admin.bootstrap` can sign in with a password after the upgrade: before upgrading, set up an identity provider in `admin.oidc` and, after the upgrade, allow a login link for each other account on the Admins page.
 
 ### Added
@@ -75,6 +77,7 @@ First tagged release.
    2. Prometheus metrics on their own listener (`metrics.listen`, default off).
    3. The public dev secrets are refused at startup unless `dev_mode: true`.
 
+[0.5.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.5.0
 [0.4.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.2.0
