@@ -1,6 +1,6 @@
 # change-0012: Shared account state across nodes
 
-- Status: applied (on merge of its pull request; not in a release yet, see CHANGELOG [Unreleased])
+- Status: applied (released in v0.4.0)
 - Date: 2026-11-27
 - Related: [task-0024](../tasks/task-0024-shared-account-state.md); [spec-0004](../specs/spec-0004-provider-accounts-and-policy.md) sections 4.4, 8 and D40 (replaces D29); [product](../products/ai-foundation.md) goal 2.4
 
