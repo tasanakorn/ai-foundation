@@ -1,6 +1,6 @@
 # change-0013: OIDC admin login, one local account
 
-- Status: draft
+- Status: applied (on merge of its pull request; not yet released)
 - Date: 2026-11-27
 - Related: [task-0025](../tasks/task-0025-oidc-admin-login.md); [spec-0001](../specs/spec-0001-gateway-core-architecture.md) sections 4.2, 6, 6.1, 6.3, 8.1, D41 and D42; [product](../products/ai-foundation.md) goal 5
 
@@ -14,7 +14,7 @@
    2. Its password comes from config on every start: plain `admin.bootstrap.password` (`AIF_ADMIN_PASSWORD`, fine for local dev) or an argon2id hash `admin.bootstrap.password_hash` (`AIF_ADMIN_PASSWORD_HASH`, for production, so the secret store holds no plain password). A new command `aif admin hash-password` makes the hash. When the stored hash does not match config, the gateway updates it and ends the account's sessions.
    3. The API and UI cannot change its role, disable it, delete it or set its password. It cannot be linked to an IdP, so it stays separate from the IdP.
    4. Other accounts cannot have a password. The API refuses `password` for them. Existing hashes of other accounts are ignored (not deleted, so a roll back still works), and the gateway logs how many at startup.
-   5. Every use is loud: a password sign-in or a master-key call writes a warning log and a NATS event `aif.audit.v1.breakglass`. The UI shows a banner while signed in with this account.
+   5. Every use is loud: a password sign-in or a master-key call writes a warning log and a NATS event `aif.audit.v1.breakglass`. The UI shows a warning in the sidebar while signed in with this account.
    6. `admin.password_login: false` turns off even this password. Then only OIDC and the master key are left.
    7. Without `admin.bootstrap.email`, there is no local account: only OIDC and the master key.
 3. **Master key.** `admin.master_key` stays as it is, optional. The docs advise leaving it empty in production unless scripts need it.
@@ -22,7 +22,7 @@
    1. A link ties the account to the IdP's user id (`issuer` + `sub`). Logins match by the link, never by email alone, so an email change at the IdP does not lock the user out or move access to someone else.
    2. Ways to link:
       1. An admin allows a one-time link for an account (valid 24h). The next OIDC login with that account's email, verified by the IdP, links it and ends the allowance. This is how a new account gets its first login.
-      2. A signed-in user links another IdP on their own account page.
+      2. A signed-in user links another IdP from "My logins" (the account menu).
       3. Optional, per IdP: `link_by_email: true` allows the one-time link for every active account, without the admin step. Off by default, because some IdPs allow open sign-up or set `email_verified` loosely.
    3. An admin can remove any link; a user can remove their own.
    4. Optional, per IdP: `allowed_groups` (for example `[aif-admins]`). A login, or a link, is accepted only when the token's groups claim (`groups_claim`, default `groups`) has one of them. So people who sign up at the IdP by themselves are refused even after a link mistake. It only filters who may sign in; it does not set the role.
@@ -60,9 +60,9 @@
    2. `GET /admin/v1/auth/oidc/{name}/start` and `/callback`: the redirect flow. `start?link=1` links the IdP to the signed-in user.
    3. Own links, any role: `GET /admin/v1/auth/identities`, `DELETE /admin/v1/auth/identities/{id}`.
    4. Admin: `GET /admin/v1/users/{id}/identities`, `DELETE /admin/v1/users/{id}/identities/{identity_id}`, `POST /admin/v1/users/{id}/identities/allow`.
-   5. `method` in auth responses gains `oidc`; user objects gain `local` (true for the break-glass account).
+   5. User objects gain `local` (true for the break-glass account) and `link_allowed_until`.
    6. Mirrored in `web/app/types/admin.ts`.
-5. Data: one migration adds the column `admin_users.link_allowed_until`, and the tables `admin_identities` (unique on `issuer, subject`; rows go with the user) and `admin_oidc_flows`.
+5. Data: migration v9 adds the column `admin_users.link_allowed_until`, and the tables `admin_identities` (with the IdP name; unique on `issuer, subject`; rows go with the user) and `admin_oidc_flows`.
 6. Config:
    1. New: `admin.bootstrap.password_hash`, `admin.password_login` (default `true`), `admin.public_url`, `admin.oidc.session_ttl`, `admin.oidc.providers[]` (`name`, `title`, `issuer`, `client_id`, `client_secret`, `scopes`, `link_by_email`, `allowed_groups`, `groups_claim`).
    2. Changed: `admin.bootstrap.*` is read on every start, not only on the first.
@@ -70,7 +70,7 @@
 7. NATS (additive): new subject `aif.audit.v1.breakglass`, core pub/sub, payload `{type, method, user_id, email, ip, node, at}`. For the master key, at most one event per node per minute.
 8. Several nodes: the flow state is in Postgres, so start and callback may land on different nodes, and no shared secret is needed.
 9. New Go dependencies (pinned): `github.com/coreos/go-oidc/v3`, `golang.org/x/oauth2`.
-10. Web UI: IdP buttons on the sign-in page (password form hidden when off); the break-glass banner; "Link login" on the account page; links and "Allow link" on the Users page; no password fields for other accounts.
+10. Web UI: IdP buttons on the sign-in page (the password form behind "Use the local break-glass account", and hidden when off); the break-glass warning; "My logins" in the account menu; "Logins" and "Allow a login link (24h)" on the Admins page, where a new account gets its first link allowance at once; no password fields.
 
 ## 4. Left out
 
@@ -78,5 +78,15 @@
 
 ## 5. Roll back
 
-1. Deploy the older binary. Old password hashes of other accounts are still stored, so their password sign-in works again.
-2. The new tables and column can stay; the older binary ignores them. A down migration drops them.
+1. An older binary refuses a database at schema v9 ("database schema v9 is newer than this binary"). Before starting it, undo migration v9 by hand. This deletes all OIDC links (tested in `TestRollbackV9`):
+
+   ```sql
+   BEGIN;
+   DROP TABLE IF EXISTS admin_oidc_flows;
+   DROP TABLE IF EXISTS admin_identities;
+   ALTER TABLE admin_users DROP COLUMN link_allowed_until;
+   DELETE FROM schema_migrations WHERE version = 9;
+   COMMIT;
+   ```
+
+2. Then deploy the older binary. Old password hashes of other accounts are still stored, so their password sign-in works again. Accounts added after the upgrade have no password; set one with the older `aif admin reset-password`.

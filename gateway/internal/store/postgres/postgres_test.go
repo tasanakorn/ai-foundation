@@ -314,3 +314,112 @@ func TestAdminUsersAndSessions(t *testing.T) {
 		t.Fatalf("delete missing: %v", err)
 	}
 }
+
+// rollbackV9 is the manual roll back of migration v9 in change-0013 section 5. Keep the two
+// the same.
+const rollbackV9 = `
+BEGIN;
+DROP TABLE IF EXISTS admin_oidc_flows;
+DROP TABLE IF EXISTS admin_identities;
+ALTER TABLE admin_users DROP COLUMN link_allowed_until;
+DELETE FROM schema_migrations WHERE version = 9;
+COMMIT;`
+
+func TestRollbackV9(t *testing.T) {
+	t.Parallel()
+	url := pgtest.URL(t)
+	ctx := context.Background()
+	s, err := Open(ctx, url, Options{MaxConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	u := &store.AdminUser{ID: "usr_1", Email: "a@example.com", Role: store.RoleAdmin, CreatedAt: now, UpdatedAt: now, LinkAllowedUntil: &now}
+	if err := s.CreateAdminUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAdminIdentity(ctx, &store.AdminIdentity{ID: "idn_1", UserID: u.ID, Issuer: "https://i", Subject: "s", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, rollbackV9); err != nil {
+		t.Fatalf("roll back: %v", err)
+	}
+	var v int
+	if err := s.pool.QueryRow(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil || v != 8 {
+		t.Fatalf("version after roll back: %d %v", v, err)
+	}
+	s.Close()
+	// The account is still there, and the migration runs again on the next start.
+	s, err = Open(ctx, url, Options{MaxConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got, err := s.GetAdminUser(ctx, u.ID); err != nil || got.LinkAllowedUntil != nil {
+		t.Fatalf("after migrating again: %+v %v", got, err)
+	}
+}
+
+func TestOIDCLinksAndFlows(t *testing.T) {
+	t.Parallel()
+	s := open(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	u := &store.AdminUser{ID: "usr_1", Email: "a@example.com", Role: store.RoleAdmin, CreatedAt: now, UpdatedAt: now}
+	if err := s.CreateAdminUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	// One-time allowance: used once, and only before it ends.
+	soon := now.Add(time.Hour)
+	if err := s.AllowAdminLink(ctx, u.ID, &soon); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ClaimAdminLink(ctx, u.ID, now.Add(2*time.Hour)); ok || err != nil {
+		t.Fatalf("claim after the end: %v %v", ok, err)
+	}
+	if ok, _ := s.ClaimAdminLink(ctx, u.ID, now); !ok {
+		t.Fatal("claim in time")
+	}
+	if ok, _ := s.ClaimAdminLink(ctx, u.ID, now); ok {
+		t.Fatal("claim twice")
+	}
+	if err := s.AllowAdminLink(ctx, "usr_none", &soon); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("allow for missing user: %v", err)
+	}
+
+	id := &store.AdminIdentity{ID: "idn_1", UserID: u.ID, Provider: "sso", Issuer: "https://i", Subject: "s", Email: "a@example.com", CreatedAt: now}
+	if err := s.CreateAdminIdentity(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateAdminIdentity(ctx, &store.AdminIdentity{ID: "idn_2", UserID: u.ID, Issuer: "https://i", Subject: "s", CreatedAt: now}); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("same issuer+subject: %v", err)
+	}
+	if got, err := s.GetAdminIdentity(ctx, "https://i", "s"); err != nil || got.UserID != u.ID || got.Provider != "sso" {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+	if err := s.DeleteAdminIdentity(ctx, "usr_other", id.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("delete another user's link: %v", err)
+	}
+	if err := s.DeleteAdminUser(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := s.ListAdminIdentities(ctx, u.ID); err != nil || len(list) != 0 {
+		t.Fatalf("links after user delete: %v %v", list, err)
+	}
+
+	// Flows: taken once, expired ones refused.
+	f := &store.OIDCFlow{IDHash: "h1", Provider: "sso", State: "st", Nonce: "n", PKCEVerifier: "v", ExpiresAt: now.Add(time.Minute)}
+	if err := s.CreateOIDCFlow(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.TakeOIDCFlow(ctx, "h1", now); err != nil || got.State != "st" {
+		t.Fatalf("take: %+v %v", got, err)
+	}
+	if _, err := s.TakeOIDCFlow(ctx, "h1", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("take twice: %v", err)
+	}
+	_ = s.CreateOIDCFlow(ctx, &store.OIDCFlow{IDHash: "h2", Provider: "sso", ExpiresAt: now.Add(time.Minute)})
+	if _, err := s.TakeOIDCFlow(ctx, "h2", now.Add(2*time.Minute)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("take expired: %v", err)
+	}
+}

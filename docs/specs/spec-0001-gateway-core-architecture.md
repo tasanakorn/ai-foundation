@@ -95,7 +95,7 @@ Packages live under `gateway/internal/`.
    1. Owner labels are copied into each row. Reports need no joins, and history stays correct if a key changes.
 3. `admin_users`: `id, email (unique, lowercase), name, role (admin | viewer), password_hash (argon2id; used only for the local account, D42), created_at, updated_at, last_login_at, disabled_at, link_allowed_until`.
 4. `admin_sessions`: `hash (SHA-256 of the cookie value), user_id (cascade delete), created_at, expires_at, user_agent, ip`.
-5. `admin_identities`: `id, user_id (cascade delete), issuer, subject, email, created_at, last_login_at`. Unique on `(issuer, subject)`. Links an OIDC login to an account (section 6.3).
+5. `admin_identities`: `id, user_id (cascade delete), provider (config name), issuer, subject, email, created_at, last_login_at`. Unique on `(issuer, subject)`. Links an OIDC login to an account (section 6.3).
 6. `admin_oidc_flows`: `id_hash, provider, state, nonce, pkce_verifier, link_user_id, expires_at`. One row per login in progress; used once.
 7. `schema_migrations`: append-only numbered migrations, applied at startup under a Postgres advisory lock (several nodes may start at once). A database newer than the binary is refused.
 8. Times are `timestamptz`, returned in UTC.
@@ -184,7 +184,7 @@ Packages live under `gateway/internal/`.
    4. The API and UI cannot change its role, disable it, delete it, set its password or link it to an IdP. User objects show it with `local: true`.
    5. Password hashes of other accounts (from before D42) are ignored, not deleted, and their count is logged at startup.
    6. `admin.password_login: false` turns off its password too: `POST /admin/v1/auth/login` returns `403`. Without `admin.bootstrap.email` there is no local account.
-   7. Every password sign-in logs a warning and publishes `aif.audit.v1.breakglass` (section 8.1). The UI shows a banner while signed in with it.
+   7. Every password sign-in logs a warning and publishes `aif.audit.v1.breakglass` (section 8.1). The UI shows a warning in the sidebar while signed in with it.
 3. **CLI.** `aif admin create-user -email E [-role viewer]` (an OIDC account, no password), `list-users`, and `hash-password` (reads a password from a hidden prompt or stdin, prints the argon2id hash for `AIF_ADMIN_PASSWORD_HASH`). These need only the config and Postgres, not NATS. `reset-password` is gone: the password is set in config.
 4. **Sessions.**
    1. Cookie `aif_session`: random 256-bit token, `HttpOnly`, `SameSite=Strict`, `Path=/`. `Secure` by `admin.cookie_secure` (`auto` = HTTPS or `X-Forwarded-Proto: https`).
