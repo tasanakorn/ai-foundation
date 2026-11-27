@@ -6,6 +6,8 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-27
+
 OIDC-only sign-in and auto redirect (change-0014). Upgrade notes: **breaking**. No database migration. With any provider in `admin.oidc.providers`, the local account can no longer sign in with its password. Before upgrading, make sure another active `admin` account is linked to the IdP. When the IdP is down, remove `admin.oidc` and restart to use the local account. Going back to 0.5.0 needs no data change.
 
 ### Added
@@ -88,6 +90,7 @@ First tagged release.
    2. Prometheus metrics on their own listener (`metrics.listen`, default off).
    3. The public dev secrets are refused at startup unless `dev_mode: true`.
 
+[0.6.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.6.0
 [0.5.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.5.0
 [0.4.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.4.0
 [0.3.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.3.0
