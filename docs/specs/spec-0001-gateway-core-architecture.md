@@ -213,6 +213,8 @@ Packages live under `gateway/internal/`.
            client_secret: ${AIF_OIDC_SSO_SECRET}
            scopes: [openid, email, profile] # default
            link_by_email: false            # default; see item 4.4
+           allowed_groups: [aif-admins]    # default empty = no check; see item 4.5
+           groups_claim: groups            # default
    ```
    1. Each provider's discovery document (`<issuer>/.well-known/openid-configuration`) is read at startup and cached. A provider that cannot be reached is logged; the next `start` for it tries again, at most every 30 seconds, and answers `503` with a short error page while it still fails. Its button stays on the sign-in page.
    2. The redirect URL to register at the IdP is `<public_url>/admin/v1/auth/oidc/<name>/callback`.
@@ -228,9 +230,10 @@ Packages live under `gateway/internal/`.
    2. An admin allows a one-time link for an account (`.../identities/allow`, sets `link_allowed_until` = now + 24h). The next OIDC login whose email matches that account, with `email_verified: true`, adds the link and clears the allowance. This is how a new account gets its first login.
    3. A signed-in user links another IdP with `start?link=1`; the flow row holds the user id, and the callback adds the link and keeps the current session.
    4. `link_by_email: true` on a provider allows that one-time link for every active account, without the admin step. Off by default: some IdPs allow open sign-up or set `email_verified` loosely. Use it only for an IdP whose users you control.
-   5. The role is the gateway's (`admin` or `viewer`). Claims from the IdP do not change it. A disabled account cannot sign in, linked or not.
-   6. The local account cannot be linked or matched; it stays separate from the IdP.
-   7. The guards of section 6.1 still hold. The way back in when no admin can sign in through the IdP is the local account or the master key.
+   5. `allowed_groups`: when set, a login or a link is accepted only if the `groups_claim` claim (a list of strings, from the ID token or userinfo) has one of the groups; otherwise `403` at the sign-in page, logged. Use it when the IdP also has users who sign up by themselves (end users of other apps). Add `groups` (or what the IdP needs) to `scopes`.
+   6. The role is the gateway's (`admin` or `viewer`). Claims from the IdP do not change it. A disabled account cannot sign in, linked or not.
+   7. The local account cannot be linked or matched; it stays separate from the IdP.
+   8. The guards of section 6.1 still hold. The way back in when no admin can sign in through the IdP is the local account or the master key.
 5. **Sign-out.** `POST /admin/v1/auth/logout` ends the gateway session only. The IdP session stays.
 
 ## 7. Metering rules

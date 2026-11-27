@@ -25,7 +25,8 @@
       2. A signed-in user links another IdP on their own account page.
       3. Optional, per IdP: `link_by_email: true` allows the one-time link for every active account, without the admin step. Off by default, because some IdPs allow open sign-up or set `email_verified` loosely.
    3. An admin can remove any link; a user can remove their own.
-   4. The role stays in the gateway (`admin` or `viewer`). Roles from the IdP are not read.
+   4. Optional, per IdP: `allowed_groups` (for example `[aif-admins]`). A login, or a link, is accepted only when the token's groups claim (`groups_claim`, default `groups`) has one of them. So people who sign up at the IdP by themselves are refused even after a link mistake. It only filters who may sign in; it does not set the role.
+   5. The role stays in the gateway (`admin` or `viewer`). Roles from the IdP are not read.
 5. **Login flow.**
    1. Start: the gateway makes a random flow id, state, nonce and PKCE verifier, stores them in Postgres (table `admin_oidc_flows`, 10 minute life, only the hash of the flow id) and sets a flow cookie `aif_oidc` with the flow id.
    2. The flow cookie is `HttpOnly`, `Secure` as the session cookie, `SameSite=Lax` and `Path=/admin/v1/auth/oidc`. Lax is needed: the IdP sends the browser back from another site, and a `Strict` cookie is not sent on that redirect.
@@ -41,8 +42,9 @@
 2. Building TOTP, WebAuthn and recovery codes ourselves is large security code to own. Any good IdP already has them.
 3. Generic OIDC, not one product: no IdP becomes a required service, so the "light" goal holds. The operator picks the IdP.
 4. Not a forward-auth proxy (tinyauth, oauth2-proxy): the gateway would have to trust a user header, which can be faked when the admin port is reachable without the proxy.
-5. One local account: the owner does not want extra local accounts by accident (2026-11-27). One break-glass account plus SSO for everyone is common practice (Argo CD has the same model), and local accounts without 2FA are the weak spot it removes.
-6. Spec-0001 D16 already planned the OIDC seam.
+5. `allowed_groups`: the same IdP may also serve end users of other apps, with open sign-up. A group check keeps them out of the admin site even if a link goes wrong (owner, 2026-11-27).
+6. One local account: the owner does not want extra local accounts by accident (2026-11-27). One break-glass account plus SSO for everyone is common practice (Argo CD has the same model), and local accounts without 2FA are the weak spot it removes.
+7. Spec-0001 D16 already planned the OIDC seam.
 
 ## 3. Impact
 
@@ -62,7 +64,7 @@
    6. Mirrored in `web/app/types/admin.ts`.
 5. Data: one migration adds the column `admin_users.link_allowed_until`, and the tables `admin_identities` (unique on `issuer, subject`; rows go with the user) and `admin_oidc_flows`.
 6. Config:
-   1. New: `admin.bootstrap.password_hash`, `admin.password_login` (default `true`), `admin.public_url`, `admin.oidc.session_ttl`, `admin.oidc.providers[]` (`name`, `title`, `issuer`, `client_id`, `client_secret`, `scopes`, `link_by_email`).
+   1. New: `admin.bootstrap.password_hash`, `admin.password_login` (default `true`), `admin.public_url`, `admin.oidc.session_ttl`, `admin.oidc.providers[]` (`name`, `title`, `issuer`, `client_id`, `client_secret`, `scopes`, `link_by_email`, `allowed_groups`, `groups_claim`).
    2. Changed: `admin.bootstrap.*` is read on every start, not only on the first.
    3. Env: `AIF_ADMIN_PASSWORD_HASH` and one client secret per IdP go in `.env.example`.
 7. NATS (additive): new subject `aif.audit.v1.breakglass`, core pub/sub, payload `{type, method, user_id, email, ip, node, at}`. For the master key, at most one event per node per minute.
