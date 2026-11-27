@@ -192,12 +192,18 @@ type CatalogModel struct {
 	Name    string          `json:"name"`
 	Formats []string        `json:"formats"`
 	Targets []CatalogTarget `json:"targets"`
+	// Target selection (spec-0005); empty or zero = the default.
+	Policy      string `json:"policy"`
+	Sticky      string `json:"sticky"`
+	MaxAttempts int    `json:"max_attempts"`
 }
 
 type CatalogTarget struct {
-	Provider string `json:"provider"`
-	Upstream string `json:"upstream"`
-	Price    *Price `json:"price,omitempty"`
+	Provider string   `json:"provider"`
+	Upstream string   `json:"upstream"`
+	Price    *Price   `json:"price,omitempty"`
+	Weight   *int     `json:"weight,omitempty"` // round_robin; nil = 1
+	Formats  []string `json:"formats"`          // empty = what the provider type serves
 }
 
 // Price is in USD per 1M tokens (same fields as config.Price).

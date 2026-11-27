@@ -261,15 +261,43 @@ const (
 // "native" (gateway-side translation) arrives with task-0009.
 const OpenAIFormatCompat = "compat"
 
+// Model is a client-facing alias. It has targets (spec-0005), or the short form
+// provider + upstream + price, which is one target. NormalizeCatalog turns the short
+// form into Targets and clears Provider, Upstream and Price.
 type Model struct {
 	Name     string `yaml:"name"`
 	Provider string `yaml:"provider"`
 	Upstream string `yaml:"upstream"`
 	Price    *Price `yaml:"price"`
-	// Formats lists the API formats that may use this alias. Default: [openai], plus
-	// anthropic when the provider is type anthropic (spec-0002 section 4).
+	// Formats lists the API formats that may use this alias. Default: every format at
+	// least one target serves (spec-0002 section 4, spec-0005 section 2.3).
 	Formats []string `yaml:"formats"`
+
+	Targets     []Target `yaml:"targets"`
+	Policy      string   `yaml:"policy"`       // priority (default) or round_robin
+	Sticky      string   `yaml:"sticky"`       // round_robin only: none (default), key, end_user, session
+	MaxAttempts int      `yaml:"max_attempts"` // upstream calls per request, targets and accounts together; 0 = no cap
 }
+
+// Target is one backend of an alias: a provider, the model name and price there.
+type Target struct {
+	Provider string   `yaml:"provider"`
+	Upstream string   `yaml:"upstream"` // default: the alias name
+	Price    *Price   `yaml:"price"`
+	Weight   *int     `yaml:"weight"`  // round_robin only, 0-100, default 1
+	Formats  []string `yaml:"formats"` // default: what the provider type serves
+}
+
+// WeightOr returns the weight, or 1 when it is not set.
+func (t Target) WeightOr() int {
+	if t.Weight == nil {
+		return 1
+	}
+	return *t.Weight
+}
+
+// Key names a target inside its alias: provider/upstream.
+func (t Target) Key() string { return t.Provider + "/" + t.Upstream }
 
 // Price is in USD per 1M tokens. CachedInput falls back to Input when zero.
 // CacheWrite (Anthropic prompt cache writes) falls back to 1.25 x Input, the 5-minute cache price.
@@ -509,13 +537,44 @@ func NormalizeCatalog(providers []Provider, models []Model) {
 	}
 	for i := range models {
 		m := &models[i]
-		if m.Upstream == "" {
-			m.Upstream = m.Name
+		if len(m.Targets) == 0 { // short form: one target
+			m.Targets = []Target{{Provider: m.Provider, Upstream: m.Upstream, Price: m.Price, Formats: m.Formats}}
+			m.Provider, m.Upstream, m.Price = "", "", nil
+		}
+		var union []string
+		for j := range m.Targets {
+			t := &m.Targets[j]
+			if t.Upstream == "" {
+				t.Upstream = m.Name
+			}
+			if len(t.Formats) == 0 {
+				t.Formats = DefaultFormats(types[t.Provider])
+			}
+			for _, f := range t.Formats {
+				if !slices.Contains(union, f) {
+					union = append(union, f)
+				}
+			}
 		}
 		if len(m.Formats) == 0 {
-			m.Formats = DefaultFormats(types[m.Provider])
+			slices.SortFunc(union, func(a, b string) int { return formatRank(a) - formatRank(b) })
+			m.Formats = union
+		}
+		if m.Policy == "" {
+			m.Policy = PolicyPriority
+		}
+		if m.Sticky == "" {
+			m.Sticky = StickyNone
 		}
 	}
+}
+
+// formatRank keeps format lists in one order: openai, then anthropic.
+func formatRank(f string) int {
+	if f == FormatOpenAI {
+		return 0
+	}
+	return 1
 }
 
 func (c *Config) validate() error {
@@ -616,16 +675,68 @@ func ValidateCatalog(providers []Provider, models []Model) error {
 			return fmt.Errorf("model without name")
 		case seen[m.Name]:
 			return fmt.Errorf("model %q defined twice", m.Name)
-		case known[m.Provider] == "":
-			return fmt.Errorf("model %q: unknown provider %q", m.Name, m.Provider)
+		case m.Provider != "" || m.Upstream != "" || m.Price != nil:
+			return fmt.Errorf("model %q: use provider/upstream/price or targets, not both", m.Name)
 		}
-		if err := validFormats(fmt.Sprintf("model %q: formats", m.Name), m.Formats); err != nil {
+		if err := validateModel(m, known); err != nil {
 			return err
 		}
-		if slices.Contains(m.Formats, FormatAnthropic) && known[m.Provider] != TypeAnthropic {
+		seen[m.Name] = true
+	}
+	return nil
+}
+
+// validateModel checks targets and the selection policy of one alias, after NormalizeCatalog.
+func validateModel(m Model, known map[string]string) error {
+	if len(m.Targets) == 0 {
+		return fmt.Errorf("model %q: needs a provider or targets", m.Name)
+	}
+	if err := validFormats(fmt.Sprintf("model %q: formats", m.Name), m.Formats); err != nil {
+		return err
+	}
+	switch {
+	case m.Policy != PolicyPriority && m.Policy != PolicyRoundRobin:
+		return fmt.Errorf("model %q: policy %q: use priority or round_robin", m.Name, m.Policy)
+	case m.Sticky != StickyNone && m.Sticky != StickyKey && m.Sticky != StickyEndUser && m.Sticky != StickySession:
+		return fmt.Errorf("model %q: sticky %q: use none, key, end_user or session", m.Name, m.Sticky)
+	case m.Sticky != StickyNone && m.Policy != PolicyRoundRobin:
+		return fmt.Errorf("model %q: sticky works only with policy round_robin", m.Name)
+	case m.MaxAttempts < 0:
+		return fmt.Errorf("model %q: max_attempts must not be negative", m.Name)
+	}
+	served, keys, first := map[string]bool{}, map[string]bool{}, 0
+	for _, t := range m.Targets {
+		switch {
+		case known[t.Provider] == "":
+			return fmt.Errorf("model %q: unknown provider %q", m.Name, t.Provider)
+		case keys[t.Key()]:
+			return fmt.Errorf("model %q: target %s defined twice", m.Name, t.Key())
+		case t.Weight != nil && m.Policy != PolicyRoundRobin:
+			return fmt.Errorf("model %q target %s: weight works only with policy round_robin", m.Name, t.Key())
+		case t.WeightOr() < 0 || t.WeightOr() > 100:
+			return fmt.Errorf("model %q target %s: weight must be 0 to 100", m.Name, t.Key())
+		}
+		if err := validFormats(fmt.Sprintf("model %q target %s: formats", m.Name, t.Key()), t.Formats); err != nil {
+			return err
+		}
+		if slices.Contains(t.Formats, FormatAnthropic) && known[t.Provider] != TypeAnthropic {
 			return fmt.Errorf("model %q: format anthropic needs a provider of type anthropic (translation is not supported)", m.Name)
 		}
-		seen[m.Name] = true
+		for _, f := range t.Formats {
+			served[f] = true
+		}
+		keys[t.Key()] = true
+		if t.WeightOr() > 0 {
+			first++
+		}
+	}
+	for _, f := range m.Formats {
+		if !served[f] {
+			return fmt.Errorf("model %q: format %s is served by none of its targets", m.Name, f)
+		}
+	}
+	if m.Policy == PolicyRoundRobin && first == 0 {
+		return fmt.Errorf("model %q: round_robin needs at least one target with weight above 0", m.Name)
 	}
 	return nil
 }

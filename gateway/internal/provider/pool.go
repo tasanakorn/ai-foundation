@@ -3,13 +3,9 @@ package provider
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +42,16 @@ type Observer interface {
 type Trace struct {
 	Account  string
 	Attempts int
+	// Outcome of the last attempt (one of the Outcome values), for the target loop.
+	Outcome string
+	// Limit caps Attempts across targets and accounts (spec-0005 section 3.4); 0 = none.
+	Limit int
+}
+
+// TraceFrom returns the request's Trace, or nil.
+func TraceFrom(ctx context.Context) *Trace {
+	t, _ := ctx.Value(traceKey{}).(*Trace)
+	return t
 }
 
 // Identity is who sent the request, for sticky selection (spec-0004 section 4.3).
@@ -82,6 +88,7 @@ type Pool struct {
 	now         func() time.Time
 	mu          sync.Mutex
 	members     []*member
+	sel         *Selector
 }
 
 type member struct {
@@ -89,7 +96,6 @@ type member struct {
 	p      Provider
 	weight int
 	// state, under Pool.mu
-	current int // smooth weighted round robin
 	until   time.Time
 	lastErr string
 	lastAt  time.Time
@@ -111,8 +117,13 @@ func newPool(c config.Provider, members []*member, o BuildOptions) *Pool {
 	if c.Cooldown == 0 {
 		c.Cooldown = 30 * time.Second
 	}
+	names, weights := make([]string, len(members)), make([]int, len(members))
+	for i, m := range members {
+		names[i], weights[i] = m.name, m.weight
+	}
 	return &Pool{name: c.Name, typ: c.Type, policy: c.Policy, sticky: c.Sticky, maxAttempts: c.MaxAttempts,
-		cooldown: c.Cooldown, obs: o.Observer, log: log, now: time.Now, members: members}
+		cooldown: c.Cooldown, obs: o.Observer, log: log, now: time.Now, members: members,
+		sel: NewSelector(c.Policy, c.Sticky, names, weights)}
 }
 
 func (p *Pool) Name() string { return p.name }
@@ -154,12 +165,15 @@ func (p *Pool) run(ctx context.Context, call func(Provider) (*http.Response, err
 	for i, m := range order {
 		resp, err = call(m.p)
 		if tr != nil {
-			tr.Account, tr.Attempts = m.name, tr.Attempts+1
+			tr.Account, tr.Attempts, tr.Outcome = m.name, tr.Attempts+1, OutcomeError
 		}
 		if ctx.Err() != nil { // the client left or the time is up: no outcome to learn from
 			return resp, err
 		}
 		outcome, rest, msg := p.classify(resp, err)
+		if tr != nil {
+			tr.Outcome = outcome
+		}
 		if p.obs != nil {
 			p.obs.UpstreamAttempt(p.name, m.name, outcome)
 		}
@@ -168,13 +182,13 @@ func (p *Pool) run(ctx context.Context, call func(Provider) (*http.Response, err
 		if !retry {
 			return resp, err
 		}
-		last := i == len(order)-1
+		last := i == len(order)-1 || tr != nil && tr.Limit > 0 && tr.Attempts >= tr.Limit
 		level := slog.LevelWarn
 		if outcome == OutcomeAuth {
 			level = slog.LevelError // a revoked or wrong key needs a person
 		}
 		p.log.Log(ctx, level, "upstream attempt failed", "provider", p.name, "account", m.name, "outcome", outcome,
-			"error", msg, "cooldown", rest.String(), "last_attempt", last)
+			"error", msg, "cooldown", rest.String(), "last_account", last)
 		if last {
 			return resp, err
 		}
@@ -251,38 +265,10 @@ func (p *Pool) order(id Identity) []*member {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
-	var healthy []*member
-	for _, m := range p.members {
-		if !now.Before(m.until) {
-			healthy = append(healthy, m)
-		}
-	}
-	var out []*member
-	if p.policy == config.PolicyRoundRobin {
-		var active, drained []*member
-		for _, m := range healthy {
-			if m.weight > 0 {
-				active = append(active, m)
-			} else {
-				drained = append(drained, m)
-			}
-		}
-		if key := p.stickyKey(id); key != "" {
-			sort.SliceStable(active, func(i, j int) bool { return score(key, active[i]) > score(key, active[j]) })
-		} else if len(active) > 0 {
-			first := swrr(active)
-			rest := make([]*member, 0, len(active))
-			rest = append(rest, first)
-			for _, m := range active {
-				if m != first {
-					rest = append(rest, m)
-				}
-			}
-			active = rest
-		}
-		out = append(active, drained...)
-	} else {
-		out = healthy
+	idx := p.sel.Order(id, func(i int) bool { return !now.Before(p.members[i].until) })
+	out := make([]*member, 0, len(idx))
+	for _, i := range idx {
+		out = append(out, p.members[i])
 	}
 	if len(out) == 0 && len(p.members) > 0 {
 		soonest := p.members[0]
@@ -296,46 +282,18 @@ func (p *Pool) order(id Identity) []*member {
 	return out
 }
 
-// swrr is smooth weighted round robin (the nginx method): picks follow the weights
-// and spread evenly inside each cycle (3:1 gives A A B A). Caller holds p.mu.
-func swrr(ms []*member) *member {
-	total := 0
-	var best *member
-	for _, m := range ms {
-		m.current += m.weight
-		total += m.weight
-		if best == nil || m.current > best.current {
-			best = m
+// Available reports whether at least one account is not resting. A model target whose
+// provider has none is skipped (spec-0005 section 3.3).
+func (p *Pool) Available() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.now()
+	for _, m := range p.members {
+		if !now.Before(m.until) {
+			return true
 		}
 	}
-	best.current -= total
-	return best
-}
-
-func (p *Pool) stickyKey(id Identity) string {
-	switch p.sticky {
-	case config.StickyKey:
-		return id.KeyID
-	case config.StickyEndUser:
-		if id.EndUser != "" {
-			return "u:" + id.EndUser
-		}
-		return id.KeyID
-	case config.StickySession:
-		if id.Session != "" {
-			return "s:" + id.Session
-		}
-		return id.KeyID
-	}
-	return ""
-}
-
-// score is weighted rendezvous hashing: the account with the highest score gets the
-// identity, and an account's share of identities follows its weight.
-func score(key string, m *member) float64 {
-	h := sha256.Sum256([]byte(key + "\x00" + m.name))
-	u := (float64(binary.BigEndian.Uint64(h[:8])>>11) + 0.5) / (1 << 53) // uniform in (0, 1)
-	return float64(m.weight) / -math.Log(u)
+	return false
 }
 
 func shorten(s string) string {
@@ -408,7 +366,8 @@ func (p *Pool) Inherit(old *Pool) {
 	defer p.mu.Unlock()
 	for _, m := range p.members {
 		if o, ok := prev[m.name]; ok {
-			m.current, m.until, m.lastErr, m.lastAt = o.current, o.until, o.lastErr, o.lastAt
+			m.until, m.lastErr, m.lastAt = o.until, o.lastErr, o.lastAt
 		}
 	}
+	p.sel.Inherit(old.sel)
 }

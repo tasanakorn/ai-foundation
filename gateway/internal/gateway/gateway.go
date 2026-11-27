@@ -167,6 +167,7 @@ type prepared struct {
 	req    map[string]json.RawMessage // top level only; unknown fields pass through untouched
 	model  string
 	route  router.Route
+	plan   []router.Target // targets to try, in policy order (spec-0005 section 3)
 	stream bool
 	size   int    // body bytes, for the token estimate when usage is missing
 	body   []byte // Anthropic only: the bytes to forward (client's or the hook's)
@@ -223,7 +224,12 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 		if rec.EndUser == "" {
 			rec.EndUser = stringField(p.req, "user")
 		}
+		id := provider.Identity{KeyID: k.ID, EndUser: rec.EndUser, Session: r.Header.Get(SessionHeader)}
 		setRoute := func(p *prepared) {
+			p.plan = p.route.Plan(formatOpenAI, id)
+			if len(p.plan) > 0 {
+				p.route = p.route.With(p.plan[0]) // the hook and the record see the first planned target
+			}
 			rec.Model, rec.Provider, rec.UpstreamModel, rec.Stream = p.model, p.route.Provider.Name(), p.route.Upstream, p.stream
 		}
 		setRoute(p)
@@ -244,16 +250,22 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 			setRoute(p)
 		}
 
-		p.req["model"], _ = json.Marshal(p.route.Upstream)
 		if p.stream && endpoint != "/embeddings" {
 			injectIncludeUsage(p.req)
 		}
-		out, _ := json.Marshal(p.req)
 
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
-		ctx, trace := provider.WithTrace(provider.WithIdentity(ctx, provider.Identity{KeyID: k.ID, EndUser: rec.EndUser, Session: r.Header.Get(SessionHeader)}))
-		resp, err := p.route.Provider.Do(ctx, endpoint, out)
+		ctx, trace := provider.WithTrace(provider.WithIdentity(ctx, id))
+		resp, used, err := p.route.Call(ctx, p.plan, func(t router.Target) (*http.Response, error) {
+			p.req["model"], _ = json.Marshal(t.Upstream) // each target has its own model name
+			out, _ := json.Marshal(p.req)
+			return t.Provider.Do(ctx, endpoint, out)
+		})
+		if used.Provider != nil {
+			p.route = p.route.With(used) // metering uses the target that answered, and its price
+			rec.Provider, rec.UpstreamModel = used.Provider.Name(), used.Upstream
+		}
 		rec.Account, rec.Attempts = trace.Account, trace.Attempts
 		if err != nil {
 			rec.StatusCode, rec.Error = http.StatusBadGateway, err.Error()

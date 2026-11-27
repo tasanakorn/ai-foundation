@@ -1,6 +1,6 @@
 # spec-0006: Catalog in the database, cached, with hot reload
 
-- Status: draft
+- Status: built (tasks 0015-0019); section 8 admin API writes and UI pages later
 - Owner: project owner
 - Related: [spec-0001](spec-0001-gateway-core-architecture.md) D4, sections 8.1, 9; [spec-0004](spec-0004-provider-accounts-and-policy.md); [spec-0005](spec-0005-model-routing-targets.md)
 

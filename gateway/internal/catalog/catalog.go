@@ -104,12 +104,17 @@ func FromCatalogFile(cfg *config.CatalogOnly) (*store.Catalog, error) {
 		c.Providers = append(c.Providers, sp)
 	}
 	for _, m := range models {
-		t := store.CatalogTarget{Provider: m.Provider, Upstream: m.Upstream}
-		if m.Price != nil {
-			pr := store.Price(*m.Price)
-			t.Price = &pr
+		sm := store.CatalogModel{Name: m.Name, Formats: append([]string{}, m.Formats...), Targets: []store.CatalogTarget{},
+			Policy: m.Policy, Sticky: m.Sticky, MaxAttempts: m.MaxAttempts}
+		for _, t := range m.Targets {
+			st := store.CatalogTarget{Provider: t.Provider, Upstream: t.Upstream, Weight: t.Weight, Formats: append([]string{}, t.Formats...)}
+			if t.Price != nil {
+				pr := store.Price(*t.Price)
+				st.Price = &pr
+			}
+			sm.Targets = append(sm.Targets, st)
 		}
-		c.Models = append(c.Models, store.CatalogModel{Name: m.Name, Formats: append([]string{}, m.Formats...), Targets: []store.CatalogTarget{t}})
+		c.Models = append(c.Models, sm)
 	}
 	return c, Validate(c)
 }
@@ -153,9 +158,14 @@ func canon(c *store.Catalog) store.Catalog {
 		if m.Formats == nil {
 			m.Formats = []string{}
 		}
-		if m.Targets == nil {
-			m.Targets = []store.CatalogTarget{}
+		targets := []store.CatalogTarget{}
+		for _, t := range m.Targets {
+			if t.Formats == nil {
+				t.Formats = []string{}
+			}
+			targets = append(targets, t)
 		}
+		m.Targets = targets
 		out.Models = append(out.Models, m)
 	}
 	return out
@@ -205,6 +215,7 @@ func (s *Snapshot) InheritState(prev *Snapshot) {
 	if prev == nil || prev.Router == nil || s.Router == nil {
 		return
 	}
+	s.Router.InheritState(prev.Router)
 	for _, name := range s.Router.Providers() {
 		np, _ := s.Router.Provider(name)
 		op, ok := prev.Router.Provider(name)
@@ -284,15 +295,17 @@ func toConfig(c *store.Catalog, kr *Keyring, resolve bool) ([]config.Provider, [
 	}
 	models := make([]config.Model, 0, len(c.Models))
 	for _, m := range c.Models {
-		// Several targets per alias arrive with spec-0005 (task-0021).
-		if len(m.Targets) != 1 {
-			return nil, nil, invalid("model %q: has %d targets; exactly one is supported until spec-0005", m.Name, len(m.Targets))
+		if len(m.Targets) == 0 {
+			return nil, nil, invalid("model %q: needs at least one target", m.Name)
 		}
-		t := m.Targets[0]
-		cm := config.Model{Name: m.Name, Provider: t.Provider, Upstream: t.Upstream, Formats: append([]string(nil), m.Formats...)}
-		if t.Price != nil {
-			pr := config.Price(*t.Price)
-			cm.Price = &pr
+		cm := config.Model{Name: m.Name, Formats: append([]string(nil), m.Formats...), Policy: m.Policy, Sticky: m.Sticky, MaxAttempts: m.MaxAttempts}
+		for _, t := range m.Targets {
+			ct := config.Target{Provider: t.Provider, Upstream: t.Upstream, Weight: t.Weight, Formats: append([]string(nil), t.Formats...)}
+			if t.Price != nil {
+				pr := config.Price(*t.Price)
+				ct.Price = &pr
+			}
+			cm.Targets = append(cm.Targets, ct)
 		}
 		models = append(models, cm)
 	}

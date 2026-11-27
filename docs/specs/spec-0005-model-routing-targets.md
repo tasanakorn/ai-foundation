@@ -1,6 +1,6 @@
 # spec-0005: Model routing with targets
 
-- Status: draft
+- Status: built (task-0021)
 - Owner: project owner
 - Related: [spec-0001](spec-0001-gateway-core-architecture.md) section 5.1; [spec-0004](spec-0004-provider-accounts-and-policy.md) (accounts and the policy rules reused here); [spec-0006](spec-0006-catalog-database-hot-reload.md) (where this config lives); [backlog-0004](../backlogs/backlog-0004-native-provider-adapters.md) item 3
 
@@ -33,7 +33,7 @@ models:
 
 1. A model has `targets`, or the old `provider` / `upstream` / `price` fields, not both. The old form is one target.
 2. Target fields: `provider` (required), `upstream` (default: the alias name), `price`, `weight` (round_robin only, 0-100, default 1), `formats` (default: what the provider supports, spec-0002 section 4).
-3. Model fields: `name`, `policy`, `sticky`, `max_attempts` (default: number of targets), `formats` (the alias serves a format when at least one target does).
+3. Model fields: `name`, `policy`, `sticky`, `max_attempts` (upstream calls per request, targets and accounts together; default 0 = no cap beyond each provider's own), `formats` (default: every format at least one target serves; a format no target serves is a config error).
 
 ## 3. Selection
 
@@ -41,7 +41,7 @@ models:
    1. The alias picks a target (this spec).
    2. That target's provider picks an account (spec-0004).
 2. Only targets that serve the request's API format take part. A `/anthropic` request uses only targets on `type: anthropic` providers. The OpenAI-format `/v1` path may use any target.
-3. A target is in cooldown when its provider has no usable account left: every account is in cooldown, or every account returned an error that another target could fix. The alias then moves to its next target.
+3. A target is skipped while its provider has no usable account (every account in cooldown). When its provider ends with an error another target could fix, the alias moves to its next target. If every target is skipped, the targets that serve the format are tried in config order (never refuse without trying).
 4. Failover rules are those of spec-0004 section 5 (before the first byte only; retryable errors only). The total time stays within `server.upstream_timeout`, and `max_attempts` counts calls across both levels.
 5. The key's model allow-list checks the **alias** name, as today. The pre-request hook runs once, sees the alias and the first chosen target, and may change the body. A `modify` that changes `model` resolves again from the start.
 

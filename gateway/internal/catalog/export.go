@@ -3,6 +3,7 @@ package catalog
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -45,11 +46,30 @@ type exportAccount struct {
 }
 
 type exportModel struct {
-	Name     string       `yaml:"name"`
+	Name        string         `yaml:"name"`
+	Provider    string         `yaml:"provider,omitempty"`
+	Upstream    string         `yaml:"upstream,omitempty"`
+	Price       *exportPrice   `yaml:"price,omitempty"`
+	Formats     []string       `yaml:"formats,omitempty,flow"`
+	Policy      string         `yaml:"policy,omitempty"`
+	Sticky      string         `yaml:"sticky,omitempty"`
+	MaxAttempts int            `yaml:"max_attempts,omitempty"`
+	Targets     []exportTarget `yaml:"targets,omitempty"`
+}
+
+type exportTarget struct {
 	Provider string       `yaml:"provider"`
-	Upstream string       `yaml:"upstream,omitempty"`
+	Upstream string       `yaml:"upstream"`
 	Price    *exportPrice `yaml:"price,omitempty"`
+	Weight   *int         `yaml:"weight,omitempty"`
 	Formats  []string     `yaml:"formats,omitempty,flow"`
+}
+
+func toExportPrice(p *store.Price) *exportPrice {
+	if p == nil {
+		return nil
+	}
+	return &exportPrice{Input: p.Input, Output: p.Output, CachedInput: p.CachedInput, CacheWrite: p.CacheWrite}
 }
 
 type exportPrice struct {
@@ -95,13 +115,21 @@ func Export(c *store.Catalog) ([]byte, error) {
 		out.Providers = append(out.Providers, ep)
 	}
 	for _, m := range c.Models {
-		if len(m.Targets) != 1 {
-			return nil, fmt.Errorf("model %q: export of %d targets needs spec-0005", m.Name, len(m.Targets))
+		em := exportModel{Name: m.Name, Formats: m.Formats, MaxAttempts: m.MaxAttempts}
+		if m.Policy != config.PolicyPriority {
+			em.Policy = m.Policy
 		}
-		t := m.Targets[0]
-		em := exportModel{Name: m.Name, Provider: t.Provider, Upstream: t.Upstream, Formats: m.Formats}
-		if t.Price != nil {
-			em.Price = &exportPrice{Input: t.Price.Input, Output: t.Price.Output, CachedInput: t.Price.CachedInput, CacheWrite: t.Price.CacheWrite}
+		if m.Sticky != config.StickyNone {
+			em.Sticky = m.Sticky
+		}
+		if t := m.Targets; len(t) == 1 && t[0].Weight == nil && em.Policy == "" && em.Sticky == "" && m.MaxAttempts == 0 &&
+			slices.Equal(t[0].Formats, m.Formats) {
+			em.Provider, em.Upstream, em.Price = t[0].Provider, t[0].Upstream, toExportPrice(t[0].Price) // the short form
+		} else {
+			for _, t := range m.Targets {
+				em.Targets = append(em.Targets, exportTarget{Provider: t.Provider, Upstream: t.Upstream,
+					Price: toExportPrice(t.Price), Weight: t.Weight, Formats: t.Formats})
+			}
 		}
 		out.Models = append(out.Models, em)
 	}

@@ -208,6 +208,15 @@ var migrations = []string{
 	ALTER TABLE usage_records
 		ADD COLUMN account  text    NOT NULL DEFAULT '',
 		ADD COLUMN attempts integer NOT NULL DEFAULT 1;`,
+
+	// v7: model aliases with several targets (spec-0005).
+	`ALTER TABLE catalog_models
+		ADD COLUMN policy       text    NOT NULL DEFAULT '',
+		ADD COLUMN sticky       text    NOT NULL DEFAULT '',
+		ADD COLUMN max_attempts integer NOT NULL DEFAULT 0;
+	ALTER TABLE catalog_targets
+		ADD COLUMN weight  integer,
+		ADD COLUMN formats text[] NOT NULL DEFAULT '{}';`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start

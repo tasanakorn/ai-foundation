@@ -43,14 +43,25 @@ const columns: TableColumn<ModelInfo>[] = [
         <template #id-cell="{ row }">
           <code>{{ row.original.id }}</code>
         </template>
+        <template #provider-cell="{ row }">
+          <div v-for="(t, i) in row.original.targets" :key="i">
+            {{ t.provider }}
+            <span v-if="row.original.policy === 'round_robin'" class="text-muted">(weight {{ t.weight }})</span>
+          </div>
+          <span v-if="row.original.targets.length > 1" class="text-xs text-muted">{{ row.original.policy.replace('_', ' ') }}, falls back in order</span>
+        </template>
         <template #upstream-cell="{ row }">
-          <code class="text-muted">{{ row.original.upstream }}</code>
+          <div v-for="(t, i) in row.original.targets" :key="i">
+            <code class="text-muted">{{ t.upstream }}</code>
+          </div>
         </template>
         <template #price-cell="{ row }">
-          <span v-if="row.original.price" class="tabular-nums">
-            in ${{ row.original.price.input }} · out ${{ row.original.price.output }}
-          </span>
-          <span v-else class="text-muted">provider-reported or free</span>
+          <div v-for="(t, i) in row.original.targets" :key="i">
+            <span v-if="t.price" class="tabular-nums">
+              in ${{ t.price.input }} / out ${{ t.price.output }}
+            </span>
+            <span v-else class="text-muted">provider-reported or free</span>
+          </div>
         </template>
       </UTable>
     </template>

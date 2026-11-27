@@ -54,11 +54,12 @@ func TestValidate(t *testing.T) {
 		"key value":        {func(c *store.Catalog) { c.Providers[0].Accounts[0].KeyRef = "sk-live-123" }, "not a key value"},
 		"relative file":    {func(c *store.Catalog) { c.Providers[0].Accounts[0].KeyRef = "file:key.txt" }, "absolute path"},
 		"bad env name":     {func(c *store.Catalog) { c.Providers[0].Accounts[0].KeyRef = "env:1X" }, "variable name"},
-		"two targets":      {func(c *store.Catalog) { c.Models[0].Targets = append(c.Models[0].Targets, c.Models[0].Targets[0]) }, "until spec-0005"},
+		"two targets":      {func(c *store.Catalog) { c.Models[0].Targets = append(c.Models[0].Targets, c.Models[0].Targets[0]) }, "defined twice"},
 		"unknown provider": {func(c *store.Catalog) { c.Models[0].Targets[0].Provider = "nope" }, `unknown provider "nope"`},
 		"duplicate model":  {func(c *store.Catalog) { c.Models[1].Name = "small" }, "defined twice"},
 		"bad type":         {func(c *store.Catalog) { c.Providers[0].Type = "grpc" }, "not supported"},
-		"anthropic format": {func(c *store.Catalog) { c.Models[0].Formats = []string{"anthropic"} }, "needs a provider of type anthropic"},
+		"anthropic format": {func(c *store.Catalog) { c.Models[0].Formats = []string{"anthropic"} }, "served by none of its targets"},
+		"anthropic target": {func(c *store.Catalog) { c.Models[0].Targets[0].Formats = []string{"anthropic"} }, "needs a provider of type anthropic"},
 	}
 	for name, tc := range cases {
 		c := valid()

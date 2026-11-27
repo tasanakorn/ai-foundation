@@ -76,7 +76,13 @@ func (h *Handler) prepareAnthropic(rt *router.Router, k *store.Key, body []byte)
 	if p.route, ok = rt.Resolve(p.model); !ok || !p.route.Serves(formatAnthropic) {
 		return nil, &apiError{http.StatusNotFound, "invalid_request_error", "model_not_found", "model " + p.model + " does not exist"}
 	}
-	if n, ok := p.route.Provider.(provider.Native); !ok || n.NativeFormat() != formatAnthropic {
+	native := false // some target that serves this format talks the Anthropic API natively
+	for _, t := range p.route.Targets {
+		if n, ok := t.Provider.(provider.Native); ok && n.NativeFormat() == formatAnthropic && slices.Contains(t.Formats, formatAnthropic) {
+			native = true
+		}
+	}
+	if !native {
 		return nil, &apiError{http.StatusNotFound, "invalid_request_error", "model_not_found", "model " + p.model + " is not served in the Anthropic format"}
 	}
 	if !keys.Allows(k, p.model) {
@@ -116,7 +122,12 @@ func (h *Handler) messages(endpoint string) http.HandlerFunc {
 			EndUser: r.Header.Get(EndUserHeader), Endpoint: endpoint, Format: formatAnthropic,
 			SessionID: truncate(r.Header.Get(SessionHeader), 128),
 		}
+		id := provider.Identity{KeyID: k.ID, EndUser: rec.EndUser, Session: rec.SessionID}
 		setRoute := func(p *prepared) {
+			p.plan = p.route.Plan(formatAnthropic, id) // Anthropic-type targets only (spec-0005 section 5.3)
+			if len(p.plan) > 0 {
+				p.route = p.route.With(p.plan[0])
+			}
 			rec.Model, rec.Provider, rec.UpstreamModel, rec.Stream = p.model, p.route.Provider.Name(), p.route.Upstream, p.stream
 		}
 		setRoute(p)
@@ -138,20 +149,30 @@ func (h *Handler) messages(endpoint string) http.HandlerFunc {
 			setRoute(p)
 		}
 
-		out := p.body
-		if p.route.Upstream != p.model {
-			if out, err = setModel(p.body, p.route.Upstream); err != nil {
-				rec.StatusCode, rec.Error = http.StatusBadRequest, "set model: "+err.Error()
-				writeAnthropicError(w, http.StatusBadRequest, "request body must be a JSON object")
-				return
+		// Each target gets the client's bytes with only its own model name set.
+		bodies := map[string][]byte{}
+		for _, t := range p.plan {
+			out := p.body
+			if t.Upstream != p.model {
+				if out, err = setModel(p.body, t.Upstream); err != nil {
+					rec.StatusCode, rec.Error = http.StatusBadRequest, "set model: "+err.Error()
+					writeAnthropicError(w, http.StatusBadRequest, "request body must be a JSON object")
+					return
+				}
 			}
+			bodies[t.Upstream] = out
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 		defer cancel()
-		native := p.route.Provider.(provider.Native)
-		ctx, trace := provider.WithTrace(provider.WithIdentity(ctx, provider.Identity{KeyID: k.ID, EndUser: rec.EndUser, Session: rec.SessionID}))
-		resp, err := native.Native(ctx, http.MethodPost, endpoint, r.URL.RawQuery, forwardHeaders(r.Header), out)
+		ctx, trace := provider.WithTrace(provider.WithIdentity(ctx, id))
+		resp, used, err := p.route.Call(ctx, p.plan, func(t router.Target) (*http.Response, error) {
+			return t.Provider.(provider.Native).Native(ctx, http.MethodPost, endpoint, r.URL.RawQuery, forwardHeaders(r.Header), bodies[t.Upstream])
+		})
+		if used.Provider != nil {
+			p.route = p.route.With(used) // metering uses the target that answered, and its price
+			rec.Provider, rec.UpstreamModel = used.Provider.Name(), used.Upstream
+		}
 		rec.Account, rec.Attempts = trace.Account, trace.Attempts
 		if err != nil {
 			rec.StatusCode, rec.Error = http.StatusBadGateway, err.Error()

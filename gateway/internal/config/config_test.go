@@ -26,7 +26,7 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Providers[0].BaseURL != openRouterBaseURL || cfg.Models[0].Upstream != "m" || cfg.Server.Listen != ":8080" ||
+	if cfg.Providers[0].BaseURL != openRouterBaseURL || cfg.Models[0].Targets[0].Upstream != "m" || cfg.Server.Listen != ":8080" ||
 		cfg.Database.MaxConns != 10 || cfg.Admin.SessionTTL != 12*time.Hour || cfg.Admin.CookieSecure != "auto" {
 		t.Fatalf("defaults not applied: %+v", cfg)
 	}
@@ -242,5 +242,41 @@ providers:
 	}
 	if p := cfg.Providers[0]; p.APIKey != "" || p.KeyRef != "" || p.Policy != PolicyPriority || p.Sticky != StickyNone || p.Cooldown != 30*time.Second {
 		t.Errorf("provider defaults: %+v", p)
+	}
+}
+
+func TestModelTargets(t *testing.T) {
+	const base = "database: {url: \"postgres://x\"}\nadmin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic, openai_format: compat}, {name: o, base_url: http://o}]\n"
+	cfg, err := Parse([]byte(base + `models:
+  - name: mixed
+    policy: round_robin
+    targets:
+      - {provider: a, upstream: claude-x, weight: 3}
+      - {provider: o, upstream: vendor/x}
+  - {name: short, provider: a, formats: [anthropic]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := cfg.Models[0]
+	if len(m.Formats) != 2 || m.Formats[0] != FormatOpenAI || m.Targets[1].Formats[0] != FormatOpenAI || len(m.Targets[1].Formats) != 1 {
+		t.Fatalf("mixed: formats %v, targets %+v", m.Formats, m.Targets)
+	}
+	if s := cfg.Models[1]; s.Provider != "" || len(s.Targets) != 1 || s.Targets[0].Upstream != "short" || s.Targets[0].Formats[0] != FormatAnthropic {
+		t.Fatalf("short form: %+v", s)
+	}
+	for name, models := range map[string]string{
+		"both forms":        "[{name: m, provider: o, targets: [{provider: o}]}]",
+		"unknown target":    "[{name: m, targets: [{provider: nope}]}]",
+		"target twice":      "[{name: m, targets: [{provider: o, upstream: x}, {provider: o, upstream: x}]}]",
+		"weight priority":   "[{name: m, targets: [{provider: o, weight: 2}]}]",
+		"anthropic on o":    "[{name: m, targets: [{provider: o, formats: [anthropic]}]}]",
+		"format not served": "[{name: m, formats: [anthropic], targets: [{provider: o}]}]",
+		"sticky priority":   "[{name: m, sticky: key, targets: [{provider: o}]}]",
+		"all drained":       "[{name: m, policy: round_robin, targets: [{provider: o, weight: 0}]}]",
+	} {
+		if _, err := Parse([]byte(base + "models: " + models + "\n")); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

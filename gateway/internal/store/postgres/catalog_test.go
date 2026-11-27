@@ -11,6 +11,7 @@ import (
 )
 
 func sampleCatalog() *store.Catalog {
+	two := 2
 	return &store.Catalog{
 		Passthrough: true,
 		Providers: []store.CatalogProvider{
@@ -21,10 +22,10 @@ func sampleCatalog() *store.Catalog {
 		},
 		Models: []store.CatalogModel{
 			{Name: "m2", Formats: []string{"openai"}, Targets: []store.CatalogTarget{
-				{Provider: "zeta", Upstream: "u2", Price: &store.Price{Input: 1, Output: 2, CachedInput: 0.5, CacheWrite: 1.25}},
-				{Provider: "alpha", Upstream: "u2b"},
+				{Provider: "zeta", Upstream: "u2", Price: &store.Price{Input: 1, Output: 2, CachedInput: 0.5, CacheWrite: 1.25}, Formats: []string{}},
+				{Provider: "alpha", Upstream: "u2b", Weight: &two, Formats: []string{"openai"}},
 			}},
-			{Name: "m1", Formats: []string{}, Targets: []store.CatalogTarget{{Provider: "alpha", Upstream: "u1"}}},
+			{Name: "m1", Formats: []string{}, Policy: "round_robin", Sticky: "session", MaxAttempts: 3, Targets: []store.CatalogTarget{{Provider: "alpha", Upstream: "u1", Formats: []string{}}}},
 		},
 	}
 }

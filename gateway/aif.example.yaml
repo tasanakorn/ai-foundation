@@ -130,6 +130,12 @@ providers:
 # price is USD per 1M tokens. If the provider reports cost (OpenRouter), that wins.
 # cache_write (Anthropic prompt-cache writes) defaults to 1.25 x input.
 # formats: which APIs may use the alias. Default [openai]; [openai, anthropic] on anthropic providers.
+# Several targets per alias (docs/specs/spec-0005): fallback or spread across providers.
+#  - name: claude-sonnet
+#    policy: priority                # or round_robin with weight per target
+#    targets:
+#      - { provider: anthropic,  upstream: claude-sonnet-5-5 }
+#      - { provider: openrouter, upstream: anthropic/claude-sonnet-5-5 }
 models:
   - name: gpt-4o-mini
     provider: openai

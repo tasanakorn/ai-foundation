@@ -74,14 +74,31 @@ export interface UsageSummary {
 
 export type GroupBy = 'none' | 'day' | 'model' | 'provider' | 'account' | 'key' | 'tenant' | 'app' | 'end_user'
 
-export interface ModelInfo {
-  id: string
+/** USD per 1M tokens. cache_write defaults to 1.25 x input when absent. */
+export interface Price { input: number, output: number, cached_input: number, cache_write?: number }
+
+/** One backend of an alias (spec-0005) */
+export interface ModelTarget {
   provider: string
   upstream: string
-  /** USD per 1M tokens. cache_write defaults to 1.25 x input when absent. */
-  price?: { input: number, output: number, cached_input: number, cache_write?: number }
+  price?: Price
+  /** round_robin weight; 1 when not set */
+  weight: number
+  formats: ApiFormat[]
+}
+
+export interface ModelInfo {
+  id: string
+  /** first target */
+  provider: string
+  /** first target */
+  upstream: string
+  /** first target's price */
+  price?: Price
   /** API formats that may use this alias */
   formats: ApiFormat[]
+  policy: AccountPolicy
+  targets: ModelTarget[]
 }
 
 export interface ModelsResponse {

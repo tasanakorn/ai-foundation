@@ -170,7 +170,7 @@ func TestStickySpread(t *testing.T) {
 	}
 	// session falls back to the key ID; a resting account sends its identities elsewhere.
 	ps, _, _ := newTestPool(t, "openai", config.PolicyRoundRobin, config.StickySession, "a", 1, "b", 1)
-	if ps.stickyKey(Identity{KeyID: "k"}) != "k" || ps.stickyKey(Identity{KeyID: "k", Session: "s1"}) != "s:s1" {
+	if ps.sel.stickyKey(Identity{KeyID: "k"}) != "k" || ps.sel.stickyKey(Identity{KeyID: "k", Session: "s1"}) != "s:s1" {
 		t.Fatal("session sticky key")
 	}
 }

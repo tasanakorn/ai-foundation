@@ -151,14 +151,14 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		return nil, err
 	}
 
-	rows, err = q.Query(ctx, `SELECT name, formats FROM catalog_models ORDER BY position`)
+	rows, err = q.Query(ctx, `SELECT name, formats, policy, sticky, max_attempts FROM catalog_models ORDER BY position`)
 	if err != nil {
 		return nil, err
 	}
 	modelIdx := map[string]int{}
 	for rows.Next() {
 		var m store.CatalogModel
-		if err := rows.Scan(&m.Name, &m.Formats); err != nil {
+		if err := rows.Scan(&m.Name, &m.Formats, &m.Policy, &m.Sticky, &m.MaxAttempts); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -171,7 +171,7 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		return nil, err
 	}
 
-	rows, err = q.Query(ctx, `SELECT model, provider, upstream, price FROM catalog_targets ORDER BY model, position`)
+	rows, err = q.Query(ctx, `SELECT model, provider, upstream, price, weight, formats FROM catalog_targets ORDER BY model, position`)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +180,7 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		var model string
 		var t store.CatalogTarget
 		var price []byte
-		if err := rows.Scan(&model, &t.Provider, &t.Upstream, &price); err != nil {
+		if err := rows.Scan(&model, &t.Provider, &t.Upstream, &price, &t.Weight, &t.Formats); err != nil {
 			return nil, err
 		}
 		if price != nil {
@@ -222,14 +222,15 @@ func writeCatalog(ctx context.Context, tx pgx.Tx, c *store.Catalog) error {
 		}
 	}
 	for i, m := range c.Models {
-		b.Queue(`INSERT INTO catalog_models (name, position, formats) VALUES ($1, $2, $3)`, m.Name, i, nonNil(m.Formats))
+		b.Queue(`INSERT INTO catalog_models (name, position, formats, policy, sticky, max_attempts) VALUES ($1, $2, $3, $4, $5, $6)`,
+			m.Name, i, nonNil(m.Formats), m.Policy, m.Sticky, m.MaxAttempts)
 		for j, t := range m.Targets {
 			var price []byte
 			if t.Price != nil {
 				price, _ = json.Marshal(t.Price)
 			}
-			b.Queue(`INSERT INTO catalog_targets (model, position, provider, upstream, price) VALUES ($1, $2, $3, $4, $5)`,
-				m.Name, j, t.Provider, t.Upstream, price)
+			b.Queue(`INSERT INTO catalog_targets (model, position, provider, upstream, price, weight, formats) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				m.Name, j, t.Provider, t.Upstream, price, t.Weight, nonNil(t.Formats))
 		}
 	}
 	if err := tx.SendBatch(ctx, b).Close(); err != nil {
