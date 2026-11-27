@@ -79,6 +79,10 @@ catalog:
   mode: ${AIF_CATALOG_MODE:-database}
   watch_interval: 5s            # file mode: how often the file is checked
   poll_interval: 30s            # how often each node checks the revision, in case an event was lost
+  # Encrypts provider keys typed into the admin UI or set with `aif catalog set-key`.
+  # Base64 of 32 random bytes (openssl rand -base64 32). To rotate, put the new key
+  # first; keep the old one until every value has been set again. Empty: references only.
+  secret_keys: [${AIF_CATALOG_SECRET_KEY:-}]
 
 # Allow "<provider>/<upstream model>" for any model, e.g. "openrouter/anthropic/claude-sonnet-4.5".
 passthrough: true

@@ -163,9 +163,15 @@ type CatalogProvider struct {
 	Accounts     []CatalogAccount  `json:"accounts"`
 }
 
+// CatalogAccount holds its key as a reference (KeyRef) or encrypted (KeyCipher), never as a value.
 type CatalogAccount struct {
 	Name   string `json:"name"`
 	KeyRef string `json:"key_ref"` // "" (no key), "env:NAME" or "file:/path"
+	// Encrypted key: AES-256-GCM (nonce first), the ID of the secret key that sealed it,
+	// and the last 4 characters for display. The ciphertext is never sent out.
+	KeyCipher []byte `json:"-"`
+	KeyID     string `json:"key_id,omitempty"`
+	KeyHint   string `json:"key_hint,omitempty"`
 }
 
 type CatalogModel struct {

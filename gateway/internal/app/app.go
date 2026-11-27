@@ -82,7 +82,11 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 	if err != nil {
 		return nil, err
 	}
-	cm, err := catalog.Start(ctx, catalog.Options{Store: st, Client: provider.NewHTTPClient(), Log: log,
+	kr, err := catalog.ParseKeyring(cfg.Catalog.SecretKeys)
+	if err != nil {
+		return nil, fmt.Errorf("catalog.secret_keys: %w", err)
+	}
+	cm, err := catalog.Start(ctx, catalog.Options{Keyring: kr, Store: st, Client: provider.NewHTTPClient(), Log: log,
 		Mode: cfg.Catalog.Mode, File: file, Path: cfg.Path, WatchInterval: cfg.Catalog.WatchInterval,
 		PollInterval: cfg.Catalog.PollInterval, Publish: nb.PublishCatalogChanged, Observer: a.Metrics})
 	if err != nil {

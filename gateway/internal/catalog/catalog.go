@@ -105,7 +105,18 @@ func FromFile(cfg *config.Config) (*store.Catalog, error) {
 func SameContent(a, b *store.Catalog) bool {
 	ja, _ := json.Marshal(canon(a))
 	jb, _ := json.Marshal(canon(b))
-	return bytes.Equal(ja, jb)
+	return bytes.Equal(ja, jb) && bytes.Equal(ciphers(a), ciphers(b))
+}
+
+// ciphers joins the encrypted keys, which JSON leaves out.
+func ciphers(c *store.Catalog) []byte {
+	var out []byte
+	for _, p := range c.Providers {
+		for _, a := range p.Accounts {
+			out = append(append(out, a.KeyCipher...), 0)
+		}
+	}
+	return out
 }
 
 func canon(c *store.Catalog) store.Catalog {
@@ -137,19 +148,20 @@ func Describe(c *store.Catalog) string {
 }
 
 // Load reads the catalog from the database and builds a snapshot.
-func Load(ctx context.Context, st store.Store, client *http.Client) (*Snapshot, error) {
+func Load(ctx context.Context, st store.Store, client *http.Client, kr *Keyring) (*Snapshot, error) {
 	c, err := st.GetCatalog(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read catalog: %w", err)
 	}
-	return Build(c, client)
+	return Build(c, client, kr)
 }
 
-// Build checks c, resolves its key references and makes the providers and the router.
-// It fails, and the caller keeps its last good snapshot, when c is invalid or a key
-// reference does not resolve (spec-0006 section 5.5).
-func Build(c *store.Catalog, client *http.Client) (*Snapshot, error) {
-	providers, models, err := toConfig(c, true)
+// Build checks c, resolves its keys (references, or encrypted values with kr) and makes
+// the providers and the router. It fails, and the caller keeps its last good snapshot,
+// when c is invalid or a key does not resolve (spec-0006 section 5.5). kr may be nil
+// when the catalog has no encrypted keys.
+func Build(c *store.Catalog, client *http.Client, kr *Keyring) (*Snapshot, error) {
+	providers, models, err := toConfig(c, kr, true)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +180,7 @@ func (e *InvalidError) Unwrap() error { return e.Err }
 
 // Validate checks the whole catalog with the same rules as the file, without resolving keys.
 func Validate(c *store.Catalog) error {
-	_, _, err := toConfig(c, false)
+	_, _, err := toConfig(c, nil, false)
 	return err
 }
 
@@ -195,8 +207,8 @@ func Replace(ctx context.Context, st store.Store, ifRevision int64, actor, summa
 var accountName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // toConfig converts c to the config types, applies defaults and validates. With resolve,
-// key references become key values; without, keys stay empty (validation only).
-func toConfig(c *store.Catalog, resolve bool) ([]config.Provider, []config.Model, error) {
+// keys are read (references) or decrypted with kr; without, keys stay empty (validation only).
+func toConfig(c *store.Catalog, kr *Keyring, resolve bool) ([]config.Provider, []config.Model, error) {
 	invalid := func(format string, a ...any) error { return &InvalidError{fmt.Errorf(format, a...)} }
 	providers := make([]config.Provider, 0, len(c.Providers))
 	for _, p := range c.Providers {
@@ -208,13 +220,16 @@ func toConfig(c *store.Catalog, resolve bool) ([]config.Provider, []config.Model
 		if !accountName.MatchString(a.Name) {
 			return nil, nil, invalid("provider %q: account name %q: use a-z, 0-9 and '-'", p.Name, a.Name)
 		}
-		if err := CheckKeyRef(a.KeyRef); err != nil {
+		if err := checkAccountKey(a); err != nil {
 			return nil, nil, invalid("provider %q account %q: %v", p.Name, a.Name, err)
 		}
 		cp := config.Provider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: copyMap(p.Headers),
 			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat}
 		if resolve {
 			key, err := ResolveKey(a.KeyRef)
+			if a.KeyCipher != nil {
+				key, err = kr.open(a)
+			}
 			if err != nil {
 				return nil, nil, fmt.Errorf("provider %q account %q: %w", p.Name, a.Name, err)
 			}
@@ -241,6 +256,23 @@ func toConfig(c *store.Catalog, resolve bool) ([]config.Provider, []config.Model
 		return nil, nil, &InvalidError{err}
 	}
 	return providers, models, nil
+}
+
+// checkAccountKey checks that an account holds its key in exactly one allowed form.
+func checkAccountKey(a store.CatalogAccount) error {
+	if a.KeyCipher == nil {
+		if a.KeyID != "" || a.KeyHint != "" {
+			return errors.New("key_id or key_hint without an encrypted key")
+		}
+		return CheckKeyRef(a.KeyRef)
+	}
+	switch {
+	case a.KeyRef != "":
+		return errors.New("a key reference and an encrypted key: use one")
+	case a.KeyID == "":
+		return errors.New("encrypted key without its secret key ID")
+	}
+	return nil
 }
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

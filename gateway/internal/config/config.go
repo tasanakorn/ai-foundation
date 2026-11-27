@@ -6,6 +6,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
@@ -47,6 +48,11 @@ type Catalog struct {
 	// PollInterval is how often a node checks the database revision, in case a
 	// catalog_changed event was missed; default 30s (spec-0006 section 5.3).
 	PollInterval time.Duration `yaml:"poll_interval"`
+	// SecretKeys encrypt provider keys stored in the database (spec-0006 section 4.4):
+	// base64 of 32 random bytes each. The first encrypts new values; all of them decrypt,
+	// so a new key goes first and old ones stay until every value is written again.
+	// Empty: only key references (env:, file:) are accepted.
+	SecretKeys []string `yaml:"secret_keys"`
 }
 
 // Catalog modes.
@@ -377,6 +383,7 @@ func (c *Config) applyDefaults() {
 	if c.Catalog.WatchInterval == 0 {
 		c.Catalog.WatchInterval = 5 * time.Second
 	}
+	c.Catalog.SecretKeys = slices.DeleteFunc(c.Catalog.SecretKeys, func(s string) bool { return strings.TrimSpace(s) == "" })
 	if c.Catalog.PollInterval == 0 {
 		c.Catalog.PollInterval = 30 * time.Second
 	}
@@ -466,6 +473,11 @@ func (c *Config) validate() error {
 	}
 	if c.Catalog.WatchInterval < 100*time.Millisecond || c.Catalog.PollInterval < 100*time.Millisecond {
 		return fmt.Errorf("catalog.watch_interval and catalog.poll_interval must be at least 100ms")
+	}
+	for i, k := range c.Catalog.SecretKeys {
+		if b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(k)); err != nil || len(b) != 32 {
+			return fmt.Errorf("catalog.secret_keys[%d]: must be base64 of 32 random bytes (openssl rand -base64 32)", i)
+		}
 	}
 	if err := validFormats("nats.hooks.pre_request.formats", c.NATS.Hooks.PreRequest.Formats); err != nil {
 		return err

@@ -98,7 +98,7 @@ func TestBuildAndOffer(t *testing.T) {
 	t.Setenv("AIF_CATALOG_TEST_KEY", "k")
 	c := valid()
 	c.Revision = 3
-	s, err := catalog.Build(c, provider.NewHTTPClient())
+	s, err := catalog.Build(c, provider.NewHTTPClient(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestBuildAndOffer(t *testing.T) {
 
 	// A key reference that does not resolve fails the build (the caller keeps its snapshot).
 	os.Unsetenv("AIF_CATALOG_TEST_KEY")
-	if _, err := catalog.Build(c, provider.NewHTTPClient()); err == nil || !strings.Contains(err.Error(), "env:AIF_CATALOG_TEST_KEY") {
+	if _, err := catalog.Build(c, provider.NewHTTPClient(), nil); err == nil || !strings.Contains(err.Error(), "env:AIF_CATALOG_TEST_KEY") {
 		t.Fatalf("unresolved key: got %v", err)
 	}
 }
@@ -134,7 +134,7 @@ func TestHolderConcurrent(t *testing.T) {
 		for rev := int64(1); rev <= 200; rev++ {
 			c := valid()
 			c.Revision = rev
-			s, err := catalog.Build(c, provider.NewHTTPClient())
+			s, err := catalog.Build(c, provider.NewHTTPClient(), nil)
 			if err != nil {
 				t.Error(err)
 				return
@@ -188,7 +188,7 @@ func TestUpdateValidatesInTransaction(t *testing.T) {
 	if !errors.As(err, &inv) {
 		t.Fatalf("broken edit: got %v", err)
 	}
-	s, err := catalog.Load(ctx, st, provider.NewHTTPClient())
+	s, err := catalog.Load(ctx, st, provider.NewHTTPClient(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

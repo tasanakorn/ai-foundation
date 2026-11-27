@@ -121,14 +121,14 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		return nil, err
 	}
 
-	rows, err = q.Query(ctx, `SELECT provider, name, key_ref FROM catalog_accounts ORDER BY provider, position`)
+	rows, err = q.Query(ctx, `SELECT provider, name, key_ref, key_cipher, key_id, key_hint FROM catalog_accounts ORDER BY provider, position`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var prov string
 		var a store.CatalogAccount
-		if err := rows.Scan(&prov, &a.Name, &a.KeyRef); err != nil {
+		if err := rows.Scan(&prov, &a.Name, &a.KeyRef, &a.KeyCipher, &a.KeyID, &a.KeyHint); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -204,7 +204,8 @@ func writeCatalog(ctx context.Context, tx pgx.Tx, c *store.Catalog) error {
 		b.Queue(`INSERT INTO catalog_providers (name, position, type, base_url, headers, workspace_id, openai_format) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			p.Name, i, p.Type, p.BaseURL, headers, p.WorkspaceID, p.OpenAIFormat)
 		for j, a := range p.Accounts {
-			b.Queue(`INSERT INTO catalog_accounts (provider, name, position, key_ref) VALUES ($1, $2, $3, $4)`, p.Name, a.Name, j, a.KeyRef)
+			b.Queue(`INSERT INTO catalog_accounts (provider, name, position, key_ref, key_cipher, key_id, key_hint) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				p.Name, a.Name, j, a.KeyRef, a.KeyCipher, a.KeyID, a.KeyHint)
 		}
 	}
 	for i, m := range c.Models {

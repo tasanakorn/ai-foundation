@@ -125,6 +125,7 @@ func TestValidate(t *testing.T) {
 		"no database url":            `providers: []`,
 		"catalog mode":               db + "catalog: {mode: git}",
 		"catalog watch":              db + "catalog: {watch_interval: 1ms}",
+		"catalog secret key":         db + "catalog: {secret_keys: [c2hvcnQ=]}",
 		"sqlite driver":              "database: {url: \"postgres://x\", driver: sqlite}",
 		"old dsn":                    "database: {url: \"postgres://x\", dsn: aif.db}",
 		"pool sizes":                 "database: {url: \"postgres://x\", max_conns: 2, min_conns: 3}",

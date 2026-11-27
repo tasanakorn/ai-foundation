@@ -186,6 +186,12 @@ var migrations = []string{
 		actor      text NOT NULL,
 		summary    text NOT NULL DEFAULT ''
 	);`,
+
+	// v5: encrypted provider keys (spec-0006 section 4.4). key_ref or key_cipher, not both.
+	`ALTER TABLE catalog_accounts
+		ADD COLUMN key_cipher bytea,
+		ADD COLUMN key_id     text NOT NULL DEFAULT '',
+		ADD COLUMN key_hint   text NOT NULL DEFAULT '';`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start

@@ -36,6 +36,7 @@ type Options struct {
 	// Publish tells the other nodes about a new revision (bus.PublishCatalogChanged). Optional.
 	Publish  func(ctx context.Context, rev int64) error
 	Observer Observer // optional
+	Keyring  *Keyring // decrypts encrypted provider keys; nil = references only
 }
 
 // Observer counts reloads (metrics.Gateway).
@@ -54,6 +55,7 @@ type Manager struct {
 	poll   time.Duration
 	pub    func(ctx context.Context, rev int64) error
 	obs    Observer
+	kr     *Keyring
 	holder *Holder
 
 	reload  sync.Mutex    // one reload at a time
@@ -72,7 +74,7 @@ type Manager struct {
 // a catalog (spec-0006 section 6).
 func Start(ctx context.Context, o Options) (*Manager, error) {
 	m := &Manager{st: o.Store, client: o.Client, log: o.Log, mode: o.Mode, path: o.Path, watch: o.WatchInterval,
-		poll: o.PollInterval, pub: o.Publish, obs: o.Observer, trigger: make(chan struct{}, 1), wake: make(chan string, 1)}
+		poll: o.PollInterval, pub: o.Publish, obs: o.Observer, kr: o.Keyring, trigger: make(chan struct{}, 1), wake: make(chan string, 1)}
 	switch o.Mode {
 	case config.CatalogFile:
 		if _, err := m.syncFile(ctx, o.File); err != nil {
@@ -83,7 +85,7 @@ func Start(ctx context.Context, o Options) (*Manager, error) {
 			return nil, fmt.Errorf("catalog seed: %w", err)
 		}
 	}
-	snap, err := Load(ctx, m.st, m.client)
+	snap, err := Load(ctx, m.st, m.client, m.kr)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +197,7 @@ func (m *Manager) Reload(ctx context.Context, source string) error {
 	if rev <= old {
 		return nil
 	}
-	snap, err := Load(ctx, m.st, m.client)
+	snap, err := Load(ctx, m.st, m.client, m.kr)
 	if err != nil {
 		m.observe("error")
 		m.log.Error("catalog reload failed; keeping the last good catalog", "source", source, "revision", old, "new_revision", rev, "err", err)
