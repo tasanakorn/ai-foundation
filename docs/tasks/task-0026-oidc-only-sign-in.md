@@ -19,7 +19,7 @@
 2. Admin API: `methods` returns `auto_redirect`. Every failed OIDC `start` and `callback` now lands on `/login?error=...` (before, `start` errors went to `/login` without a message, which would loop with auto redirect).
 3. Web: the sign-in page redirects to the IdP when `auto_redirect` is set, but not with `error` or `signed_out`; it shows "Try again with ..." after an error and "Signed out" after sign-out. Pages opened without a session go to `/login?next=<path>`; `next` (local paths only) is kept in session storage and opened after sign-in. The break-glass link is gone.
 4. Tests: password refused with OIDC on (`403 password_login_off`, `methods` `password: false`, also for a viewer); `auto_redirect` in `methods`; unknown provider and refused sign-in land on `/login?error=`; config checks for `auto_redirect`. Tests that signed in the local account beside OIDC now sign in an OIDC admin (`oidcAdmin`).
-5. Not done: no browser test of the redirect itself (the UI part); the deploy at tconio-ai tries it against its IdP.
+5. Not done: no browser test of the redirect itself (the UI part), and not tried against a real IdP yet.
 
 ## Verification
 
