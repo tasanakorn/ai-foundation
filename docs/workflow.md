@@ -6,6 +6,8 @@ A light guide: how every change moves from an idea to code. Folder rules are in 
 
 Every change gets a change document **first**, before any code. Then the product and spec documents, then the tasks, then the code.
 
+An edit to `CLAUDE.md` alone needs no change document.
+
 ```
 change (draft) -> product + spec -> tasks -> code -> change (applied)
 ```
