@@ -21,6 +21,9 @@ Guidance for Claude Code in this repository.
 2. Order: change document (`draft`) first, then the product and spec documents, then the task documents, then the code.
 3. No code without a change document and a task. Close both when done (task `done` with a Result, change `applied`).
 4. One branch and one pull request per change; never push to `main` directly. Releases are annotated `vX.Y.Z` tags on `main` (`docs/workflow.md` section 5).
+5. A dirty workspace is not good practice. When the workspace has uncommitted changes, left by your work or found at the start, stop and ask the human what to do, with a recommendation (for example: commit them to branch X and open a PR, or keep them on disk for review).
+6. Never commit and push in the same tool call.
+7. Keep to the scope of the request: change only what the prompt asks for. When it would also need other changes (side effects, for example other docs, indexes or change records), ask first.
 
 ## 3. File naming rules
 
