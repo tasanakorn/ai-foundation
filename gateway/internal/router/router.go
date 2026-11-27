@@ -29,6 +29,12 @@ type ModelInfo struct {
 	Formats  []string      `json:"formats"`
 }
 
+// Source gives the router of the current catalog snapshot (spec-0006 section 5).
+// A request calls Router once and keeps the result, so a reload never changes it halfway.
+type Source interface {
+	Router() *Router
+}
+
 type Router struct {
 	providers   map[string]provider.Provider
 	models      map[string]config.Model
@@ -84,6 +90,9 @@ func (r *Router) Providers() []string {
 }
 
 func (r *Router) Passthrough() bool { return r.passthrough }
+
+// Router makes a fixed *Router a Source (tests, single-snapshot setups).
+func (r *Router) Router() *Router { return r }
 
 // providerFormats is the default format list for "<provider>/<model>" names (spec-0002 section 4.4).
 func providerFormats(p provider.Provider) []string {

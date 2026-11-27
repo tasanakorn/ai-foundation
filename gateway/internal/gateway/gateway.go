@@ -39,7 +39,7 @@ const (
 )
 
 type Handler struct {
-	router  *router.Router
+	routes  router.Source
 	keys    *keys.Service
 	rec     *metering.Recorder
 	hook    hook.Hook
@@ -52,7 +52,7 @@ type Handler struct {
 }
 
 type Options struct {
-	Router          *router.Router
+	Router          router.Source // the current catalog snapshot (catalog.Holder) or a fixed *router.Router
 	Keys            *keys.Service
 	Recorder        *metering.Recorder
 	Hook            hook.Hook    // optional pre-request hook, already wrapped with hook.Guard
@@ -65,7 +65,7 @@ type Options struct {
 }
 
 func New(o Options) *Handler {
-	return &Handler{router: o.Router, keys: o.Keys, rec: o.Recorder, hook: o.Hook, ready: o.Ready, log: o.Log,
+	return &Handler{routes: o.Router, keys: o.Keys, rec: o.Recorder, hook: o.Hook, ready: o.Ready, log: o.Log,
 		maxBody: o.MaxBodyBytes, timeout: o.UpstreamTimeout, anthPfx: o.AnthropicPrefix, metrics: o.Metrics}
 }
 
@@ -131,7 +131,7 @@ func (h *Handler) auth(format string, next http.HandlerFunc) http.Handler {
 func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	k := keyFrom(r.Context())
 	data := []map[string]any{}
-	for _, m := range h.router.Models() {
+	for _, m := range h.routes.Router().Models() {
 		if keys.Allows(k, m.ID) && slices.Contains(m.Formats, formatOpenAI) {
 			data = append(data, map[string]any{"id": m.ID, "object": "model", "created": 0, "owned_by": m.Provider})
 		}
@@ -171,7 +171,7 @@ type prepared struct {
 	body   []byte // Anthropic only: the bytes to forward (client's or the hook's)
 }
 
-func (h *Handler) prepare(k *store.Key, body []byte) (*prepared, *apiError) {
+func (h *Handler) prepare(rt *router.Router, k *store.Key, body []byte) (*prepared, *apiError) {
 	p := prepared{size: len(body)}
 	if err := json.Unmarshal(body, &p.req); err != nil || p.req == nil {
 		return nil, badRequest("invalid_json", "request body must be a JSON object")
@@ -181,7 +181,7 @@ func (h *Handler) prepare(k *store.Key, body []byte) (*prepared, *apiError) {
 		return nil, badRequest("missing_model", "model is required")
 	}
 	var ok bool
-	if p.route, ok = h.router.Resolve(p.model); !ok || !p.route.Serves(formatOpenAI) {
+	if p.route, ok = rt.Resolve(p.model); !ok || !p.route.Serves(formatOpenAI) {
 		return nil, &apiError{http.StatusNotFound, "invalid_request_error", "model_not_found", "model " + p.model + " does not exist"}
 	}
 	if !keys.Allows(k, p.model) {
@@ -208,7 +208,8 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 			httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "bad_body", "cannot read request body")
 			return
 		}
-		p, aerr := h.prepare(k, body)
+		rt := h.routes.Router() // this request keeps this snapshot, even if the catalog reloads (spec-0006 section 5.2)
+		p, aerr := h.prepare(rt, k, body)
 		if aerr != nil {
 			aerr.write(w) // client mistakes are not metered
 			return
@@ -234,7 +235,7 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 		}()
 
 		if h.hook != nil {
-			if p, aerr = h.runHook(r.Context(), k, &rec, endpoint, body, p, formatOpenAI); aerr != nil {
+			if p, aerr = h.runHook(r.Context(), rt, k, &rec, endpoint, body, p, formatOpenAI); aerr != nil {
 				rec.StatusCode, rec.Error = aerr.status, aerr.code+": "+aerr.msg
 				aerr.write(w)
 				return
@@ -276,7 +277,7 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 
 // runHook asks the pre-request hook. It returns the request to send: the same one,
 // or the hook's replacement (parsed, routed and allow-list checked again).
-func (h *Handler) runHook(ctx context.Context, k *store.Key, rec *store.UsageRecord, endpoint string, body []byte, p *prepared, format string) (*prepared, *apiError) {
+func (h *Handler) runHook(ctx context.Context, rt *router.Router, k *store.Key, rec *store.UsageRecord, endpoint string, body []byte, p *prepared, format string) (*prepared, *apiError) {
 	d, err := h.hook.PreRequest(ctx, &hook.Request{
 		RequestID: rec.ID,
 		Key:       hook.Key{ID: k.ID, TenantID: k.TenantID, AppID: k.AppID, Metadata: k.Metadata},
@@ -296,9 +297,9 @@ func (h *Handler) runHook(ctx context.Context, k *store.Key, rec *store.UsageRec
 		if format == formatAnthropic {
 			// Allowed, but a changed body loses prompt caching and can break preserved thinking.
 			h.log.Warn("pre-request hook modified an Anthropic request", "request_id", rec.ID, "model", p.model)
-			return h.prepareAnthropic(k, d.Body)
+			return h.prepareAnthropic(rt, k, d.Body)
 		}
-		return h.prepare(k, d.Body)
+		return h.prepare(rt, k, d.Body)
 	}
 	return p, nil
 }

@@ -10,6 +10,8 @@ import (
 var (
 	ErrNotFound = errors.New("not found")
 	ErrConflict = errors.New("already exists")
+	// ErrStale means a catalog change was based on an older revision (spec-0006 section 8.3).
+	ErrStale = errors.New("catalog revision changed")
 )
 
 // Key is a gateway API key. The secret is never stored; only its SHA-256 hash.
@@ -133,6 +135,70 @@ type AdminSession struct {
 	IP        string
 }
 
+// Catalog is the routing catalog in the database (spec-0006): providers with their
+// accounts, models with their targets, and passthrough. Order matters (priority
+// policies, spec-0004), so slices keep the order they were written in.
+//
+// Keys are never stored as values here: KeyRef is a reference such as "env:NAME" or
+// "file:/run/secrets/key" (spec-0006 section 4.4).
+type Catalog struct {
+	Revision    int64             `json:"revision"` // 0 = never written
+	Passthrough bool              `json:"passthrough"`
+	Providers   []CatalogProvider `json:"providers"`
+	Models      []CatalogModel    `json:"models"`
+	UpdatedAt   time.Time         `json:"updated_at"`
+	UpdatedBy   string            `json:"updated_by"`
+}
+
+// Empty reports whether the catalog has no providers and no models.
+func (c *Catalog) Empty() bool { return len(c.Providers) == 0 && len(c.Models) == 0 }
+
+type CatalogProvider struct {
+	Name         string            `json:"name"`
+	Type         string            `json:"type"`
+	BaseURL      string            `json:"base_url"`
+	Headers      map[string]string `json:"headers"`
+	WorkspaceID  string            `json:"workspace_id"`
+	OpenAIFormat string            `json:"openai_format"`
+	Accounts     []CatalogAccount  `json:"accounts"`
+}
+
+type CatalogAccount struct {
+	Name   string `json:"name"`
+	KeyRef string `json:"key_ref"` // "" (no key), "env:NAME" or "file:/path"
+}
+
+type CatalogModel struct {
+	Name    string          `json:"name"`
+	Formats []string        `json:"formats"`
+	Targets []CatalogTarget `json:"targets"`
+}
+
+type CatalogTarget struct {
+	Provider string `json:"provider"`
+	Upstream string `json:"upstream"`
+	Price    *Price `json:"price,omitempty"`
+}
+
+// Price is in USD per 1M tokens (same fields as config.Price).
+type Price struct {
+	Input       float64 `json:"input"`
+	Output      float64 `json:"output"`
+	CachedInput float64 `json:"cached_input"`
+	CacheWrite  float64 `json:"cache_write,omitempty"`
+}
+
+// CatalogChange is one committed catalog revision (the audit trail, spec-0006 section 4.3).
+type CatalogChange struct {
+	Revision  int64     `json:"revision"`
+	CreatedAt time.Time `json:"created_at"`
+	Actor     string    `json:"actor"` // admin user ID, "master_key", "file" or "seed"
+	Summary   string    `json:"summary"`
+}
+
+// AnyRevision makes UpdateCatalog skip the revision check.
+const AnyRevision int64 = -1
+
 // Store is the persistence contract. Add new methods here; keep them small and generic.
 type Store interface {
 	CreateKey(ctx context.Context, k *Key) error
@@ -159,6 +225,17 @@ type Store interface {
 	DeleteAdminSession(ctx context.Context, hash string) error
 	DeleteAdminSessions(ctx context.Context, userID, exceptHash string) error
 	DeleteExpiredAdminSessions(ctx context.Context, now time.Time) error
+
+	// GetCatalog returns the whole catalog as one consistent read.
+	GetCatalog(ctx context.Context) (*Catalog, error)
+	CatalogRevision(ctx context.Context) (int64, error)
+	// UpdateCatalog changes the catalog in one transaction. It locks the catalog, checks
+	// that the revision is still ifRevision (else ErrStale; AnyRevision skips the check),
+	// and calls fn with the current catalog. fn edits it in place and returns an error to
+	// abort (for example a failed validation): then nothing is written. Otherwise the
+	// whole catalog is written, the revision goes up by one and a change row is added.
+	UpdateCatalog(ctx context.Context, ifRevision int64, actor, summary string, fn func(*Catalog) error) (*Catalog, error)
+	ListCatalogChanges(ctx context.Context, limit int) ([]CatalogChange, error)
 
 	Close() error
 }

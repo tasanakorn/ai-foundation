@@ -4,6 +4,12 @@ All notable changes. Format: [Keep a Changelog](https://keepachangelog.com/en/1.
 
 There is no prebuilt image or binary: build from the tag (README section 6).
 
+## [Unreleased]
+
+### Added
+
+1. Catalog in the database (spec-0006, task-0015): migration v4 adds the catalog tables, a revision and an audit table. Nodes serve an immutable catalog snapshot swapped atomically; a request keeps the snapshot it started with. Not used at startup yet: the file still provides the catalog until task-0016.
+
 ## [0.1.0] - 2026-11-27
 
 First tagged release.

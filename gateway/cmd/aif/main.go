@@ -131,7 +131,7 @@ func run(cfgPath string, log *slog.Logger) error {
 			}
 		}()
 	}
-	log.Info("aif started", "version", version, "node", nb.NodeID, "providers", a.Router.Providers(), "models", len(a.Router.Models()))
+	log.Info("aif started", "version", version, "node", nb.NodeID, "providers", a.Catalog.Router().Providers(), "models", len(a.Catalog.Router().Models()))
 
 	select {
 	case <-ctx.Done():

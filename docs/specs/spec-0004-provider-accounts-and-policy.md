@@ -103,7 +103,7 @@ Weighted round robin, 3:1 (plan-a gets 3 of every 4 requests):
 
 ## 6. Metering and events
 
-1. `UsageRecord` gets `account` (account name) and `attempts` (number of upstream calls). Migration v4 adds both columns with defaults `''` and `1`.
+1. `UsageRecord` gets `account` (account name) and `attempts` (number of upstream calls). A new migration (after the catalog tables of spec-0006, v4) adds both columns with defaults `''` and `1`.
 2. The NATS usage payload gets the same two fields. This is additive (spec-0001 section 8.1 rules): `aif.usage.v1` stays.
 3. Tokens and cost come from the successful attempt only. Failed attempts cost nothing at the provider, except a stream cut in the middle, which is metered as today.
 4. Logs: one line per failed attempt (provider, account, status, cooldown), then the usual request line with `account` and `attempts`.

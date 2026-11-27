@@ -13,6 +13,7 @@ import (
 	"ai-foundation/gateway/internal/admin"
 	"ai-foundation/gateway/internal/auth"
 	"ai-foundation/gateway/internal/bus"
+	"ai-foundation/gateway/internal/catalog"
 	"ai-foundation/gateway/internal/clientip"
 	"ai-foundation/gateway/internal/config"
 	"ai-foundation/gateway/internal/gateway"
@@ -21,7 +22,6 @@ import (
 	"ai-foundation/gateway/internal/metering"
 	"ai-foundation/gateway/internal/metrics"
 	"ai-foundation/gateway/internal/provider"
-	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store"
 )
 
@@ -29,7 +29,7 @@ import (
 var Version = "dev"
 
 type App struct {
-	Router   *router.Router
+	Catalog  *catalog.Holder // the catalog snapshot this node serves (spec-0006)
 	Keys     *keys.Service
 	Auth     *auth.Service
 	Recorder *metering.Recorder
@@ -44,11 +44,11 @@ type App struct {
 // New builds one gateway node. The caller owns st and nb and closes them after Close.
 // It also creates the first admin account from admin.bootstrap when none exists.
 func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, log *slog.Logger) (*App, error) {
-	providers, err := provider.Build(cfg.Providers, provider.NewHTTPClient())
+	snap, err := catalog.FromConfig(cfg, provider.NewHTTPClient())
 	if err != nil {
 		return nil, err
 	}
-	a := &App{Router: router.New(cfg.Models, providers, cfg.Passthrough), Keys: keys.NewService(st),
+	a := &App{Catalog: catalog.NewHolder(snap), Keys: keys.NewService(st),
 		Auth: auth.NewService(st, cfg.Admin.SessionTTL, log), Bus: nb}
 
 	// Key revocation reaches every node through NATS.
@@ -89,7 +89,7 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		return dbCheck()
 	}
 	gw := gateway.New(gateway.Options{
-		Router: a.Router, Keys: a.Keys, Recorder: a.Recorder, Hook: preHook, Ready: ready, Log: log,
+		Router: a.Catalog, Keys: a.Keys, Recorder: a.Recorder, Hook: preHook, Ready: ready, Log: log,
 		MaxBodyBytes: cfg.Server.MaxBodyBytes, UpstreamTimeout: cfg.Server.UpstreamTimeout,
 		AnthropicPrefix: cfg.Server.Anthropic.Prefix(), Metrics: a.Metrics,
 	})
@@ -102,7 +102,7 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 		if err != nil {
 			return nil, err
 		}
-		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Router, Public: a.Public,
+		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Catalog, Public: a.Public,
 			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir,
 			ClientIP: ips, Log: log}).Routes()
 	}

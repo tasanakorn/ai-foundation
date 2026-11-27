@@ -16,7 +16,7 @@
 | [task-0012](task-0012-prometheus-metrics.md)         | Prometheus metrics                        | done   | 2026-11-27 |
 | [task-0013](task-0013-refuse-dev-secrets.md)         | Refuse dev secrets outside dev mode       | done   | 2026-11-27 |
 | [task-0014](task-0014-versioned-releases.md)         | Versioned releases                        | done   | 2026-11-27 |
-| [task-0015](task-0015-catalog-tables-snapshot.md)    | Catalog tables and snapshot               | todo   | 2026-11-27 |
+| [task-0015](task-0015-catalog-tables-snapshot.md)    | Catalog tables and snapshot               | done   | 2026-11-27 |
 | [task-0016](task-0016-catalog-seed-file-mode.md)     | Catalog seed and file mode                | todo   | 2026-11-27 |
 | [task-0017](task-0017-catalog-hot-reload.md)         | Catalog hot reload across nodes           | todo   | 2026-11-27 |
 | [task-0018](task-0018-provider-key-storage.md)       | Provider key references and encryption    | todo   | 2026-11-27 |

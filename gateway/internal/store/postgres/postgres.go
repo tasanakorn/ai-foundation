@@ -136,6 +136,56 @@ var migrations = []string{
 		ADD COLUMN cache_write_tokens bigint NOT NULL DEFAULT 0,
 		ADD COLUMN format             text   NOT NULL DEFAULT 'openai',
 		ADD COLUMN session_id         text   NOT NULL DEFAULT '';`,
+
+	// v4: the catalog in the database (spec-0006). One meta row holds the revision.
+	`CREATE TABLE catalog_meta (
+		id          integer PRIMARY KEY CHECK (id = 1),
+		revision    bigint NOT NULL,
+		passthrough boolean NOT NULL DEFAULT false,
+		updated_at  timestamptz NOT NULL,
+		updated_by  text NOT NULL DEFAULT ''
+	);
+	INSERT INTO catalog_meta (id, revision, updated_at) VALUES (1, 0, now());
+
+	CREATE TABLE catalog_providers (
+		name          text PRIMARY KEY,
+		position      integer NOT NULL,
+		type          text NOT NULL,
+		base_url      text NOT NULL DEFAULT '',
+		headers       jsonb NOT NULL DEFAULT '{}',
+		workspace_id  text NOT NULL DEFAULT '',
+		openai_format text NOT NULL DEFAULT ''
+	);
+
+	CREATE TABLE catalog_accounts (
+		provider text NOT NULL REFERENCES catalog_providers (name) ON DELETE CASCADE,
+		name     text NOT NULL,
+		position integer NOT NULL,
+		key_ref  text NOT NULL DEFAULT '',
+		PRIMARY KEY (provider, name)
+	);
+
+	CREATE TABLE catalog_models (
+		name     text PRIMARY KEY,
+		position integer NOT NULL,
+		formats  text[] NOT NULL DEFAULT '{}'
+	);
+
+	CREATE TABLE catalog_targets (
+		model    text NOT NULL REFERENCES catalog_models (name) ON DELETE CASCADE,
+		position integer NOT NULL,
+		provider text NOT NULL REFERENCES catalog_providers (name),
+		upstream text NOT NULL,
+		price    jsonb,
+		PRIMARY KEY (model, position)
+	);
+
+	CREATE TABLE catalog_changes (
+		revision   bigint PRIMARY KEY,
+		created_at timestamptz NOT NULL,
+		actor      text NOT NULL,
+		summary    text NOT NULL DEFAULT ''
+	);`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start

@@ -1,6 +1,7 @@
 // Package config loads and validates the gateway configuration file.
 //
-// Providers and models live in the config file (easy to review and version).
+// Infra settings live in the file. Providers and models (the catalog) are in the file
+// today; spec-0006 moves them to the database, where the file seeds them.
 // Keys and usage live in the database (they change at runtime).
 package config
 
@@ -321,9 +322,16 @@ func (c *Config) applyDefaults() {
 	if c.Server.Anthropic.Listen == "" {
 		c.Server.Anthropic.Listen = "off"
 	}
+	NormalizeCatalog(c.Providers, c.Models)
+}
+
+// NormalizeCatalog applies the defaults of providers and models in place: provider type
+// and base URL, model upstream name and formats. The file and the database catalog
+// (spec-0006) both use it, so a catalog means the same wherever it comes from.
+func NormalizeCatalog(providers []Provider, models []Model) {
 	types := map[string]string{}
-	for i := range c.Providers {
-		p := &c.Providers[i]
+	for i := range providers {
+		p := &providers[i]
 		if p.Type == "" {
 			p.Type = TypeOpenAI
 		}
@@ -338,8 +346,8 @@ func (c *Config) applyDefaults() {
 		p.BaseURL = strings.TrimRight(p.BaseURL, "/")
 		types[p.Name] = p.Type
 	}
-	for i := range c.Models {
-		m := &c.Models[i]
+	for i := range models {
+		m := &models[i]
 		if m.Upstream == "" {
 			m.Upstream = m.Name
 		}
@@ -401,14 +409,20 @@ func (c *Config) validate() error {
 			return fmt.Errorf("%s %q is not a valid NATS subject (no spaces, wildcards or empty tokens)", name, subj)
 		}
 	}
-	providers := map[string]string{} // name -> type
-	for _, p := range c.Providers {
+	return ValidateCatalog(c.Providers, c.Models)
+}
+
+// ValidateCatalog checks providers and models after NormalizeCatalog: names, types,
+// formats and model-to-provider links. It is the whole-catalog check of spec-0006 D39.
+func ValidateCatalog(providers []Provider, models []Model) error {
+	known := map[string]string{} // provider name -> type
+	for _, p := range providers {
 		switch {
 		case p.Name == "":
 			return fmt.Errorf("provider without name")
 		case strings.Contains(p.Name, "/"):
 			return fmt.Errorf("provider %q: name must not contain '/'", p.Name)
-		case providers[p.Name] != "":
+		case known[p.Name] != "":
 			return fmt.Errorf("provider %q defined twice", p.Name)
 		case p.Type != TypeOpenAI && p.Type != TypeOpenRouter && p.Type != TypeAnthropic:
 			return fmt.Errorf("provider %q: type %q is not supported (supported: openai, openrouter, anthropic)", p.Name, p.Type)
@@ -418,25 +432,25 @@ func (c *Config) validate() error {
 		if err := p.validateAnthropic(); err != nil {
 			return err
 		}
-		providers[p.Name] = p.Type
+		known[p.Name] = p.Type
 	}
-	models := map[string]bool{}
-	for _, m := range c.Models {
+	seen := map[string]bool{}
+	for _, m := range models {
 		switch {
 		case m.Name == "":
 			return fmt.Errorf("model without name")
-		case models[m.Name]:
+		case seen[m.Name]:
 			return fmt.Errorf("model %q defined twice", m.Name)
-		case providers[m.Provider] == "":
+		case known[m.Provider] == "":
 			return fmt.Errorf("model %q: unknown provider %q", m.Name, m.Provider)
 		}
 		if err := validFormats(fmt.Sprintf("model %q: formats", m.Name), m.Formats); err != nil {
 			return err
 		}
-		if slices.Contains(m.Formats, FormatAnthropic) && providers[m.Provider] != TypeAnthropic {
+		if slices.Contains(m.Formats, FormatAnthropic) && known[m.Provider] != TypeAnthropic {
 			return fmt.Errorf("model %q: format anthropic needs a provider of type anthropic (translation is not supported)", m.Name)
 		}
-		models[m.Name] = true
+		seen[m.Name] = true
 	}
 	return nil
 }

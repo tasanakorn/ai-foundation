@@ -29,7 +29,7 @@ type Handler struct {
 	keys         *keys.Service
 	auth         *auth.Service
 	st           store.Store
-	router       *router.Router
+	routes       router.Source
 	public       http.Handler
 	masterKey    string
 	cookieSecure string
@@ -42,7 +42,7 @@ type Options struct {
 	Keys         *keys.Service
 	Auth         *auth.Service
 	Store        store.Store
-	Router       *router.Router
+	Router       router.Source
 	Public       http.Handler // the /v1 handler, for the playground
 	MasterKey    string       // optional; "" turns bearer master-key access off
 	CookieSecure string       // auto, always, never
@@ -52,7 +52,7 @@ type Options struct {
 }
 
 func New(o Options) *Handler {
-	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, router: o.Router, public: o.Public, masterKey: o.MasterKey,
+	return &Handler{keys: o.Keys, auth: o.Auth, st: o.Store, routes: o.Router, public: o.Public, masterKey: o.MasterKey,
 		cookieSecure: o.CookieSecure, uiDir: o.UIDir, clientIP: o.ClientIP, log: o.Log}
 }
 
@@ -149,10 +149,11 @@ func (h *Handler) revokeKey(w http.ResponseWriter, r *http.Request) {
 // ---- models ----
 
 func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
+	rt := h.routes.Router()
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"data":        h.router.Models(),
-		"providers":   h.router.Providers(),
-		"passthrough": h.router.Passthrough(),
+		"data":        rt.Models(),
+		"providers":   rt.Providers(),
+		"passthrough": rt.Passthrough(),
 	})
 }
 

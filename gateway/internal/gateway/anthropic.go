@@ -24,6 +24,7 @@ import (
 	"ai-foundation/gateway/internal/keys"
 	"ai-foundation/gateway/internal/metering"
 	"ai-foundation/gateway/internal/provider"
+	"ai-foundation/gateway/internal/router"
 	"ai-foundation/gateway/internal/store"
 )
 
@@ -48,7 +49,7 @@ func (h *Handler) listAnthropicModels(w http.ResponseWriter, r *http.Request) {
 	k := keyFrom(r.Context())
 	data := []map[string]any{}
 	var first, last any
-	for _, m := range h.router.Models() {
+	for _, m := range h.routes.Router().Models() {
 		if !keys.Allows(k, m.ID) || !slices.Contains(m.Formats, formatAnthropic) {
 			continue
 		}
@@ -62,7 +63,7 @@ func (h *Handler) listAnthropicModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // prepareAnthropic parses only what routing needs. p.body stays the client's bytes.
-func (h *Handler) prepareAnthropic(k *store.Key, body []byte) (*prepared, *apiError) {
+func (h *Handler) prepareAnthropic(rt *router.Router, k *store.Key, body []byte) (*prepared, *apiError) {
 	p := prepared{size: len(body), body: body}
 	if err := json.Unmarshal(body, &p.req); err != nil || p.req == nil {
 		return nil, badRequest("invalid_json", "request body must be a JSON object")
@@ -72,7 +73,7 @@ func (h *Handler) prepareAnthropic(k *store.Key, body []byte) (*prepared, *apiEr
 		return nil, badRequest("missing_model", "model: field required")
 	}
 	var ok bool
-	if p.route, ok = h.router.Resolve(p.model); !ok || !p.route.Serves(formatAnthropic) {
+	if p.route, ok = rt.Resolve(p.model); !ok || !p.route.Serves(formatAnthropic) {
 		return nil, &apiError{http.StatusNotFound, "invalid_request_error", "model_not_found", "model " + p.model + " does not exist"}
 	}
 	if n, ok := p.route.Provider.(provider.Native); !ok || n.NativeFormat() != formatAnthropic {
@@ -103,7 +104,8 @@ func (h *Handler) messages(endpoint string) http.HandlerFunc {
 			writeAnthropicError(w, http.StatusBadRequest, "cannot read request body")
 			return
 		}
-		p, aerr := h.prepareAnthropic(k, body)
+		rt := h.routes.Router() // kept for the whole request (spec-0006 section 5.2)
+		p, aerr := h.prepareAnthropic(rt, k, body)
 		if aerr != nil {
 			aerr.writeAs(w, formatAnthropic) // client mistakes are not metered
 			return
@@ -128,7 +130,7 @@ func (h *Handler) messages(endpoint string) http.HandlerFunc {
 
 		// count_tokens is free and changes nothing, so it skips the hook.
 		if h.hook != nil && !countTokens {
-			if p, aerr = h.runHook(r.Context(), k, &rec, endpoint, body, p, formatAnthropic); aerr != nil {
+			if p, aerr = h.runHook(r.Context(), rt, k, &rec, endpoint, body, p, formatAnthropic); aerr != nil {
 				rec.StatusCode, rec.Error = aerr.status, aerr.code+": "+aerr.msg
 				aerr.writeAs(w, formatAnthropic)
 				return
