@@ -1,6 +1,6 @@
 # task-0025: OIDC admin login, one local account
 
-- Status: todo
+- Status: doing
 - Change: [change-0013](../changes/change-0013-oidc-admin-login.md)
 - Spec: [spec-0001](../specs/spec-0001-gateway-core-architecture.md) sections 4.2, 6, 6.1, 6.3, 8.1, D41 and D42
 - Done when: an admin signs in through an OIDC IdP and gets a normal session; only linked, active accounts get in; the flow works when start and callback land on different nodes; only the config's local account can use a password, its password follows config on every start, and each use is logged and published; `admin.password_login: false` blocks even that while the master key still works.
