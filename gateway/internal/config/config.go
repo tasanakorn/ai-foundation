@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"regexp"
@@ -218,6 +219,8 @@ type Provider struct {
 	Sticky      string        `yaml:"sticky"`       // round_robin only: none (default), key, end_user, session
 	MaxAttempts int           `yaml:"max_attempts"` // accounts tried per request; 0 = all
 	Cooldown    time.Duration `yaml:"cooldown"`     // rest after a retryable failure; default 30s
+	// Credit is the default credit of every account that sets none (task-0010).
+	Credit *Credit `yaml:"credit"`
 }
 
 // Account is one key of a provider. BaseURL, Headers and WorkspaceID override the provider's.
@@ -229,6 +232,85 @@ type Account struct {
 	BaseURL     string            `yaml:"base_url"`
 	Headers     map[string]string `yaml:"headers"`
 	WorkspaceID string            `yaml:"workspace_id"`
+	Credit      *Credit           `yaml:"credit"` // how this account is paid for; nil = not tracked (task-0010)
+}
+
+// Credit is how one provider account is paid for (task-0010). An account has one
+// credit type; an organization with several kinds of credit is several accounts.
+type Credit struct {
+	Type string `yaml:"type"` // monthly, prepaid or payg; required
+	// USD is the credit of each cycle (monthly) or the budget of each cycle (payg).
+	// Prepaid has none: its balance is the top-ups recorded in the database.
+	USD float64 `yaml:"usd"`
+	// CycleDay is the day of the month a cycle starts (1-31, default 1); in a month
+	// without that day the cycle starts on the month's last day. Timezone is an IANA
+	// name such as Asia/Bangkok (default UTC). monthly and payg only.
+	CycleDay int    `yaml:"cycle_day"`
+	Timezone string `yaml:"timezone"`
+}
+
+// Credit types.
+const (
+	CreditMonthly = "monthly" // a plan credit that resets each cycle and expires (for example a Claude plan)
+	CreditPrepaid = "prepaid" // a balance that only top-ups raise; no reset
+	CreditPayg    = "payg"    // pay-as-you-go: billed later; usd is a budget for the warning only
+)
+
+// Periodic reports whether the credit has cycles (monthly and payg).
+func (c Credit) Periodic() bool { return c.Type == CreditMonthly || c.Type == CreditPayg }
+
+// Location is the credit's time zone; UTC when unset or unknown.
+func (c Credit) Location() *time.Location {
+	if c.Timezone == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(c.Timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// Cycle returns the cycle that holds now: [start, end), in the credit's time zone.
+func (c Credit) Cycle(now time.Time) (start, end time.Time) {
+	loc := c.Location()
+	now = now.In(loc)
+	on := func(y int, m time.Month) time.Time {
+		d := max(c.CycleDay, 1)
+		if last := time.Date(y, m+1, 0, 0, 0, 0, 0, loc).Day(); d > last {
+			d = last
+		}
+		return time.Date(y, m, d, 0, 0, 0, 0, loc)
+	}
+	start = on(now.Year(), now.Month())
+	if now.Before(start) {
+		start = on(now.Year(), now.Month()-1)
+	}
+	return start, on(start.Year(), start.Month()+1)
+}
+
+func (c *Credit) validate() error {
+	switch c.Type {
+	case CreditMonthly, CreditPayg:
+		switch {
+		case !(c.USD > 0) || math.IsInf(c.USD, 0):
+			return fmt.Errorf("credit.usd must be above 0")
+		case c.CycleDay < 1 || c.CycleDay > 31:
+			return fmt.Errorf("credit.cycle_day must be 1 to 31")
+		}
+		if _, err := time.LoadLocation(c.Timezone); err != nil || c.Timezone == "Local" {
+			return fmt.Errorf("credit.timezone %q: use an IANA name such as Asia/Bangkok", c.Timezone)
+		}
+	case CreditPrepaid:
+		if c.USD != 0 || c.CycleDay != 0 || c.Timezone != "" {
+			return fmt.Errorf("credit type prepaid takes no usd, cycle_day or timezone: its balance is the top-ups recorded in the database (aif credit add)")
+		}
+	case "":
+		return fmt.Errorf("credit.type is required: monthly, prepaid or payg")
+	default:
+		return fmt.Errorf("credit.type %q: use monthly, prepaid or payg", c.Type)
+	}
+	return nil
 }
 
 // WeightOr returns the weight, or 1 when it is not set.
@@ -522,8 +604,24 @@ func NormalizeCatalog(providers []Provider, models []Model) {
 			p.APIKey, p.KeyRef = "", ""
 		}
 		for j := range p.Accounts {
-			p.Accounts[j].BaseURL = strings.TrimRight(p.Accounts[j].BaseURL, "/")
+			a := &p.Accounts[j]
+			a.BaseURL = strings.TrimRight(a.BaseURL, "/")
+			if a.Credit == nil && p.Credit != nil { // the provider's credit is each account's default
+				c := *p.Credit
+				a.Credit = &c
+			}
+			if a.Credit != nil && a.Credit.Periodic() && (a.Credit.CycleDay == 0 || a.Credit.Timezone == "") {
+				c := *a.Credit // a copy: never change a Credit that another account shares
+				if c.CycleDay == 0 {
+					c.CycleDay = 1
+				}
+				if c.Timezone == "" {
+					c.Timezone = "UTC"
+				}
+				a.Credit = &c
+			}
 		}
+		p.Credit = nil
 		if p.Policy == "" {
 			p.Policy = PolicyPriority
 		}
@@ -816,6 +914,11 @@ func (p Provider) validateAccounts() error {
 			return fmt.Errorf("provider %q account %q: weight must be 0 to 100", p.Name, a.Name)
 		case a.WorkspaceID != "" && p.Type != TypeAnthropic:
 			return fmt.Errorf("provider %q account %q: workspace_id is only for type anthropic", p.Name, a.Name)
+		}
+		if a.Credit != nil {
+			if err := a.Credit.validate(); err != nil {
+				return fmt.Errorf("provider %q account %q: %v", p.Name, a.Name, err)
+			}
 		}
 		seen[a.Name] = true
 		if a.WeightOr() > 0 {

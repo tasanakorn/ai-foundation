@@ -11,7 +11,7 @@
 | [task-0007](task-0007-anthropic-provider-type.md)    | Anthropic provider type                   | done   | 2026-11-27 |
 | [task-0008](task-0008-anthropic-messages-api.md)     | Anthropic Messages API under /anthropic   | done   | 2026-11-27 |
 | [task-0009](task-0009-anthropic-native-adapter.md)   | Native Anthropic adapter (OpenAI clients) | todo   | 2026-11-27 |
-| [task-0010](task-0010-anthropic-credit-awareness.md) | Plan credit awareness                     | todo   | 2026-11-27 |
+| [task-0010](task-0010-anthropic-credit-awareness.md) | Credit awareness per account              | done   | 2026-11-27 |
 | [task-0011](task-0011-trusted-proxies.md)            | Trusted proxies and client IP             | done   | 2026-11-27 |
 | [task-0012](task-0012-prometheus-metrics.md)         | Prometheus metrics                        | done   | 2026-11-27 |
 | [task-0013](task-0013-refuse-dev-secrets.md)         | Refuse dev secrets outside dev mode       | done   | 2026-11-27 |

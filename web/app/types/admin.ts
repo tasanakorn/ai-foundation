@@ -119,6 +119,56 @@ export interface AccountState {
   cooldown_until?: string
   last_error?: string
   last_error_at?: string
+  /** How the account is paid for, and how much is used (task-0010); absent when not tracked */
+  credit?: CreditState
+}
+
+/** monthly: a plan credit that resets each cycle; prepaid: a balance raised by top-ups; payg: billed later, usd is a budget */
+export type CreditType = 'monthly' | 'prepaid' | 'payg'
+
+/** Spend is the cost the gateway metered on all nodes. */
+export interface CreditState {
+  type: CreditType
+  /** monthly and payg: credit or budget of each cycle */
+  usd?: number
+  cycle_day?: number
+  /** IANA name, e.g. Asia/Bangkok */
+  timezone?: string
+  /** monthly and payg; cycle_end is exclusive */
+  cycle_start?: string
+  cycle_end?: string
+  /** prepaid: sum of the ledger, and what is left */
+  topups_usd?: number
+  balance_usd?: number
+  /** prepaid: first ledger entry; spend counts from here. Absent: no entry yet */
+  since?: string
+  spent_usd: number
+  used_percent: number
+  /** warning from 80 percent */
+  level: 'ok' | 'warning' | 'exhausted'
+}
+
+/** One line of a prepaid account's ledger (/admin/v1/credit-entries). Append-only. */
+export interface CreditEntry {
+  id: string
+  provider: string
+  account: string
+  /** top-up above 0; a correction may be either sign */
+  usd: number
+  note: string
+  /** when the money arrived */
+  at: string
+  created_at: string
+  /** admin user ID, "master_key" or "cli" */
+  actor: string
+}
+
+export interface CreditEntryInput {
+  provider: string
+  account: string
+  usd: number
+  note?: string
+  at?: string
 }
 
 export interface ProviderState {

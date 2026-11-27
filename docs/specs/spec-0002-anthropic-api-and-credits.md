@@ -161,7 +161,7 @@ Source: [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway), 
 1. Detect the "credit balance is too low" error.
    1. OpenAI format: return the gateway error code `provider_credit_exhausted`, not a generic 502.
    2. Anthropic format: pass the upstream error through unchanged (rule 2.2.3.7).
-2. Optional `credit` block on the provider: `monthly_usd` and `cycle_day` (credits reset on the billing day, not on the 1st).
+2. Optional `credit` block per account (spec-0004), with a `type`: `monthly` (a plan credit: `usd`, `cycle_day`, `timezone`; it resets on the billing day, not on the 1st), `payg` (a budget per cycle) or `prepaid` (a balance from top-ups recorded in the database). One type per account. Built in task-0010.
    1. Admin UI shows spend this cycle against the credit, from the usage table.
    2. Warn at 80 percent.
 3. With the fallback chain (backlog-0004 item 1.3), route a model to a paid provider when credits run out.
@@ -191,5 +191,5 @@ Numbers continue from spec-0001 section 9.
 ## 11. Open questions
 
 1. Should `/anthropic/v1/messages/batches` (50 percent cheaper, good for credits) be in task-0008 or later? It needs async metering.
-2. Which HTTP status does the "credit balance too low" error use? The docs give only the message text. Check in task-0010.
+2. Which HTTP status does the "credit balance too low" error use? The docs give only the message text. task-0010 treats a 402, or an Anthropic 400 whose body says "credit balance", as out of credits; confirm with a real exhausted account.
 3. Price 1-hour cache writes at 2x input? The usage object splits them (`cache_creation.ephemeral_1h_input_tokens`). Claude Code used only 5-minute writes in the task-0008 test.

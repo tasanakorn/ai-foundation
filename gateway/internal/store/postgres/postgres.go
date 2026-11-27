@@ -217,6 +217,26 @@ var migrations = []string{
 	ALTER TABLE catalog_targets
 		ADD COLUMN weight  integer,
 		ADD COLUMN formats text[] NOT NULL DEFAULT '{}';`,
+
+	// v8: credit per account (task-0010): its type and cycle in the catalog, the
+	// prepaid ledger, and an index for spend per account.
+	`ALTER TABLE catalog_accounts
+		ADD COLUMN credit_type      text             NOT NULL DEFAULT '',
+		ADD COLUMN credit_usd       double precision NOT NULL DEFAULT 0,
+		ADD COLUMN credit_cycle_day integer          NOT NULL DEFAULT 0,
+		ADD COLUMN credit_timezone  text             NOT NULL DEFAULT '';
+	CREATE TABLE credit_ledger (
+		id         text PRIMARY KEY,
+		provider   text NOT NULL,
+		account    text NOT NULL,
+		usd        double precision NOT NULL,
+		note       text NOT NULL DEFAULT '',
+		at         timestamptz NOT NULL,
+		created_at timestamptz NOT NULL,
+		actor      text NOT NULL
+	);
+	CREATE INDEX idx_credit_ledger_account ON credit_ledger (provider, account, at);
+	CREATE INDEX idx_usage_account ON usage_records (provider, account, created_at);`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start
@@ -384,6 +404,9 @@ func usageWhere(f store.UsageFilter) *where {
 	}
 	if f.Model != "" {
 		w.add("model = ?", f.Model)
+	}
+	if f.Provider != "" {
+		w.add("provider = ?", f.Provider)
 	}
 	if f.Account != "" {
 		w.add("account = ?", f.Account)

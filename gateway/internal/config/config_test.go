@@ -280,3 +280,89 @@ func TestModelTargets(t *testing.T) {
 		}
 	}
 }
+
+// Credit per account (task-0010): one type per account; the provider's credit is
+// each account's default; cycle_day and timezone have defaults; bad values are refused.
+func TestAccountCredit(t *testing.T) {
+	const base = "database: {url: \"postgres://x\"}\nadmin: {listen: \"off\"}\n"
+	cfg, err := Parse([]byte(base + `providers:
+  - name: p
+    base_url: http://x
+    credit: {type: monthly, usd: 100, cycle_day: 5, timezone: Asia/Bangkok}
+    accounts:
+      - {name: a}
+      - {name: b, credit: {type: prepaid}}
+      - {name: c, credit: {type: payg, usd: 300}}
+  - {name: q, base_url: http://y, credit: {type: monthly, usd: 20}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Providers[0]
+	if p.Credit != nil || *p.Accounts[0].Credit != (Credit{CreditMonthly, 100, 5, "Asia/Bangkok"}) ||
+		*p.Accounts[1].Credit != (Credit{Type: CreditPrepaid}) || *p.Accounts[2].Credit != (Credit{CreditPayg, 300, 1, "UTC"}) {
+		t.Fatalf("p: provider %+v, a %+v, b %+v, c %+v", p.Credit, p.Accounts[0].Credit, p.Accounts[1].Credit, p.Accounts[2].Credit)
+	}
+	if q := cfg.Providers[1]; *q.Accounts[0].Credit != (Credit{CreditMonthly, 20, 1, "UTC"}) {
+		t.Fatalf("q (api_key form): %+v", q.Accounts[0].Credit)
+	}
+	for name, credit := range map[string]string{
+		"no type":          "{usd: 5}",
+		"unknown type":     "{type: weekly, usd: 5}",
+		"zero":             "{type: monthly, usd: 0}",
+		"below 0":          "{type: payg, usd: -5}",
+		"day below 1":      "{type: monthly, usd: 5, cycle_day: -1}",
+		"day 32":           "{type: monthly, usd: 5, cycle_day: 32}",
+		"bad timezone":     "{type: monthly, usd: 5, timezone: Mars/Base}",
+		"local timezone":   "{type: monthly, usd: 5, timezone: Local}",
+		"prepaid with usd": "{type: prepaid, usd: 50}",
+		"prepaid with day": "{type: prepaid, cycle_day: 3}",
+	} {
+		if _, err := Parse([]byte(base + "providers: [{name: p, base_url: http://x, credit: " + credit + "}]\n")); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestCreditCycle(t *testing.T) {
+	bkk, err := time.LoadLocation("Asia/Bangkok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(s string, loc *time.Location) time.Time {
+		v, err := time.ParseInLocation("2006-01-02 15:04", s, loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	for _, c := range []struct {
+		cycleDay        int
+		tz              string
+		loc             *time.Location
+		now, start, end string
+	}{
+		{1, "UTC", time.UTC, "2026-11-27 10:00", "2026-11-01 00:00", "2026-12-01 00:00"},
+		{5, "", time.UTC, "2026-11-27 10:00", "2026-11-05 00:00", "2026-12-05 00:00"},
+		{5, "UTC", time.UTC, "2026-11-04 23:59", "2026-10-05 00:00", "2026-11-05 00:00"},
+		{5, "UTC", time.UTC, "2026-11-05 00:00", "2026-11-05 00:00", "2026-12-05 00:00"},
+		{28, "UTC", time.UTC, "2027-01-03 00:00", "2026-12-28 00:00", "2027-01-28 00:00"},
+		{31, "UTC", time.UTC, "2026-02-15 00:00", "2026-01-31 00:00", "2026-02-28 00:00"}, // February has no 31st
+		{31, "UTC", time.UTC, "2026-02-28 00:00", "2026-02-28 00:00", "2026-03-31 00:00"},
+		{30, "UTC", time.UTC, "2028-02-29 12:00", "2028-02-29 00:00", "2028-03-30 00:00"}, // leap year
+		// 2026-11-04 20:00 UTC is already the 5th in Bangkok (UTC+7).
+		{5, "Asia/Bangkok", bkk, "2026-11-05 03:00", "2026-11-05 00:00", "2026-12-05 00:00"},
+		// New York changes to summer time on 2026-03-08: the cycle is 23 hours shorter than 31 days.
+		{1, "America/New_York", ny, "2026-03-15 12:00", "2026-03-01 00:00", "2026-04-01 00:00"},
+	} {
+		now := at(c.now, c.loc)
+		start, end := Credit{Type: CreditMonthly, USD: 1, CycleDay: c.cycleDay, Timezone: c.tz}.Cycle(now.UTC())
+		if !start.Equal(at(c.start, c.loc)) || !end.Equal(at(c.end, c.loc)) {
+			t.Errorf("day %d %s at %s: got %s to %s, want %s to %s", c.cycleDay, c.tz, c.now, start, end, c.start, c.end)
+		}
+	}
+}

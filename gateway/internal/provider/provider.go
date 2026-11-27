@@ -95,7 +95,7 @@ func Build(cfgs []config.Provider, o BuildOptions) (map[string]Provider, error) 
 			default:
 				return nil, fmt.Errorf("provider %q: unsupported type %q", c.Name, c.Type)
 			}
-			members = append(members, &member{name: a.Name, p: p, weight: a.WeightOr()})
+			members = append(members, &member{name: a.Name, p: p, weight: a.WeightOr(), credit: a.Credit})
 		}
 		pool := newPool(c, members, o)
 		if c.Type == config.TypeAnthropic {

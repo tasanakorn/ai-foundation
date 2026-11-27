@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"ai-foundation/gateway/internal/store"
 )
@@ -16,7 +17,7 @@ func sampleCatalog() *store.Catalog {
 		Passthrough: true,
 		Providers: []store.CatalogProvider{
 			{Name: "zeta", Type: "openai", BaseURL: "http://z/v1", Headers: map[string]string{"X-A": "1"},
-				Accounts: []store.CatalogAccount{{Name: "b", KeyRef: "env:KEY_B"}, {Name: "a", KeyRef: "file:/run/a"}}},
+				Accounts: []store.CatalogAccount{{Name: "b", KeyRef: "env:KEY_B", Credit: &store.Credit{Type: "monthly", USD: 100.5, CycleDay: 5, Timezone: "Asia/Bangkok"}}, {Name: "c", KeyRef: "env:KEY_C", Credit: &store.Credit{Type: "prepaid"}}, {Name: "a", KeyRef: "file:/run/a"}}},
 			{Name: "alpha", Type: "anthropic", OpenAIFormat: "compat", WorkspaceID: "wrk", Headers: map[string]string{},
 				Accounts: []store.CatalogAccount{{Name: "default"}}},
 		},
@@ -159,5 +160,35 @@ func TestCatalogConcurrentUpdates(t *testing.T) {
 	c, _ := s.GetCatalog(ctx)
 	if c.Revision != n || len(c.Models) != n {
 		t.Fatalf("rev %d with %d models, want %d and %d", c.Revision, len(c.Models), n, n)
+	}
+}
+
+func TestCreditLedger(t *testing.T) {
+	t.Parallel()
+	st := open(t)
+	ctx := context.Background()
+	day := func(d int) time.Time { return time.Date(2026, 11, d, 0, 0, 0, 0, time.UTC) }
+	for i, e := range []store.CreditEntry{
+		{ID: "cre_1", Provider: "p", Account: "a", USD: 50, Note: "invoice 1", At: day(1), CreatedAt: day(1), Actor: "cli"},
+		{ID: "cre_2", Provider: "p", Account: "a", USD: -3.25, At: day(20), CreatedAt: day(21), Actor: "usr_x"},
+		{ID: "cre_3", Provider: "p", Account: "b", USD: 10, At: day(10), CreatedAt: day(10), Actor: "master_key"},
+	} {
+		if err := st.AddCreditEntry(ctx, &e); err != nil {
+			t.Fatalf("entry %d: %v", i, err)
+		}
+	}
+	got, err := st.ListCreditEntries(ctx, "p", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "cre_2" || got[0].USD != -3.25 || got[1].Note != "invoice 1" || !got[1].At.Equal(day(1)) {
+		t.Fatalf("p/a ledger: %+v", got)
+	}
+	if all, _ := st.ListCreditEntries(ctx, "", ""); len(all) != 3 || all[0].ID != "cre_2" || all[1].ID != "cre_3" {
+		t.Fatalf("all: %+v", all)
+	}
+	dup := store.CreditEntry{ID: "cre_1", Provider: "p", Account: "a", USD: 1, At: day(2), CreatedAt: day(2), Actor: "cli"}
+	if err := st.AddCreditEntry(ctx, &dup); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("same id: %v", err)
 	}
 }

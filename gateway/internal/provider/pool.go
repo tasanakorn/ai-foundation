@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -95,6 +96,7 @@ type member struct {
 	name   string
 	p      Provider
 	weight int
+	credit *config.Credit // nil = not tracked
 	// state, under Pool.mu
 	until   time.Time
 	lastErr string
@@ -311,6 +313,60 @@ type AccountState struct {
 	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
 	LastError     string     `json:"last_error,omitempty"`
 	LastErrorAt   *time.Time `json:"last_error_at,omitempty"`
+	// Credit is how the account is paid for (task-0010); nil = not tracked. The admin
+	// API adds the spend from the usage table and the prepaid ledger.
+	Credit *CreditState `json:"credit,omitempty"`
+}
+
+// CreditState is how an account is paid for and how much is used (task-0010).
+// monthly and payg count the spend of the current cycle against USD; prepaid counts
+// the spend since the first ledger entry against the sum of the ledger.
+type CreditState struct {
+	Type string `json:"type"` // monthly, prepaid or payg
+	// monthly and payg
+	USD        float64    `json:"usd,omitempty"` // credit (monthly) or budget (payg) of each cycle
+	CycleDay   int        `json:"cycle_day,omitempty"`
+	Timezone   string     `json:"timezone,omitempty"`
+	CycleStart *time.Time `json:"cycle_start,omitempty"`
+	CycleEnd   *time.Time `json:"cycle_end,omitempty"`
+	// prepaid
+	TopupsUSD  *float64   `json:"topups_usd,omitempty"`  // sum of the ledger
+	BalanceUSD *float64   `json:"balance_usd,omitempty"` // TopupsUSD - SpentUSD
+	Since      *time.Time `json:"since,omitempty"`       // first ledger entry; nil = no entry yet
+	// all types
+	SpentUSD    float64 `json:"spent_usd"`
+	UsedPercent float64 `json:"used_percent"`
+	Level       string  `json:"level"` // ok, warning (CreditWarnPercent or more) or exhausted (100 or more)
+}
+
+// CreditWarnPercent is where an account's credit shows a warning.
+const CreditWarnPercent = 80
+
+// SetSpent fills in the spend of this cycle (monthly, payg).
+func (c *CreditState) SetSpent(usd float64) {
+	c.SpentUSD = usd
+	c.UsedPercent, c.Level = creditLevel(c.USD, usd)
+}
+
+// SetPrepaid fills in the ledger sum, the spend since the first entry and the balance.
+func (c *CreditState) SetPrepaid(topups, spent float64, since *time.Time) {
+	balance := topups - spent
+	c.TopupsUSD, c.BalanceUSD, c.Since, c.SpentUSD = &topups, &balance, since, spent
+	c.UsedPercent, c.Level = creditLevel(topups, spent)
+}
+
+func creditLevel(limit, spent float64) (float64, string) {
+	if limit <= 0 {
+		return 100, "exhausted"
+	}
+	pct := math.Round(spent/limit*1000) / 10 // one decimal
+	switch {
+	case spent >= limit:
+		return pct, "exhausted"
+	case pct >= CreditWarnPercent:
+		return pct, "warning"
+	}
+	return pct, "ok"
 }
 
 // PoolState is a provider with its policy and accounts, on this node.
@@ -344,6 +400,14 @@ func (p *Pool) State() PoolState {
 		if !m.lastAt.IsZero() {
 			at := m.lastAt.UTC()
 			a.LastErrorAt = &at
+		}
+		if c := m.credit; c != nil {
+			a.Credit = &CreditState{Type: c.Type, Level: "ok"}
+			if c.Periodic() {
+				start, end := c.Cycle(now)
+				a.Credit.USD, a.Credit.CycleDay, a.Credit.Timezone = c.USD, c.CycleDay, c.Timezone
+				a.Credit.CycleStart, a.Credit.CycleEnd = &start, &end
+			}
 		}
 		s.Accounts = append(s.Accounts, a)
 	}
