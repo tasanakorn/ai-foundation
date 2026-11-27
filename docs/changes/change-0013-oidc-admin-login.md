@@ -2,11 +2,11 @@
 
 - Status: draft
 - Date: 2026-11-27
-- Related: [spec-0001](../specs/spec-0001-gateway-core-architecture.md) section 6.1 item 7 and D16; [product](../products/ai-foundation.md) goal 5; spec update and tasks to follow
+- Related: [task-0025](../tasks/task-0025-oidc-admin-login.md); [spec-0001](../specs/spec-0001-gateway-core-architecture.md) sections 4.2, 6, 6.3 and D41; [product](../products/ai-foundation.md) goal 5
 
 ## 1. What changes
 
-1. The admin UI and admin API accept sign-in through an outside identity provider (IdP) that speaks OIDC (OpenID Connect, the standard "login with ..." protocol). Examples: Pocket ID, Casdoor, Authentik, Keycloak, Google.
+1. The admin UI and admin API accept sign-in through an outside identity provider (IdP) that speaks OIDC (OpenID Connect, the standard "login with ..." protocol). Examples: Rauthy, Pocket ID, Authentik, Keycloak, Google.
 2. The gateway is only an OIDC client. 2FA, passkeys and Google login are features of the IdP. The gateway builds none of them.
 3. The built-in password login stays. It is not removed:
    1. It is on by default, so a fresh install still works with no IdP.
@@ -15,9 +15,13 @@
 4. One or more IdPs can be set, each with a name shown on the sign-in page.
 5. No sign-up through the IdP. An outside login works only for an admin account that already exists in the gateway, and only after it is linked to that account:
    1. A link ties the account to the IdP's user id (`issuer` + `sub`). Every login matches by that link, never by email alone, so an email change at the IdP does not lock the user out or move access to someone else.
-   2. Default way to link: a signed-in user starts "Link login" for an IdP on their own account page. An admin can remove any link.
-   3. Optional, per IdP: `link_by_email: true` lets the first login link itself when the IdP's email matches an active `admin_users` row and the IdP says the email is verified. It is off by default, because some IdPs allow open sign-up or set `email_verified` loosely. Turn it on only for an IdP whose users you control.
-   4. The role stays in the gateway (`admin` or `viewer`). Roles from the IdP are not read in this change.
+   2. Ways to link:
+      1. A signed-in user starts "Link login" for an IdP on their own account page.
+      2. An admin allows a one-time link for a user (it expires after 24h). The next OIDC login with that user's email, verified by the IdP, links the account and ends the allowance. This is how a user without a password gets their first login.
+      3. An admin can remove any link; a user can remove their own.
+   3. A user may have no password (`password` is optional on create). Such a user signs in only through OIDC.
+   4. Optional, per IdP: `link_by_email: true` lets the first login link itself when the IdP's email matches an active `admin_users` row and the IdP says the email is verified. It is off by default, because some IdPs allow open sign-up or set `email_verified` loosely. Turn it on only for an IdP whose users you control.
+   5. The role stays in the gateway (`admin` or `viewer`). Roles from the IdP are not read in this change.
 6. After a good OIDC login, the gateway issues its normal session (`auth.Service.IssueSession`). Sessions, CSRF checks, roles and sign-out work as today.
 7. The login flow:
    1. Start: the gateway makes a random state, nonce and PKCE verifier, stores them in Postgres (table `admin_oidc_flows`, 10 minute life, only the hash of the flow id), and sets a flow cookie `aif_oidc` holding the random flow id.
@@ -38,16 +42,19 @@
 ## 3. Impact
 
 1. Product document: goal 5 changes ("Outside logins can be added later" -> OIDC login, password login optional).
-2. Spec: spec-0001 section 6.1 and a new decision (D-number set in the spec update): config shape, flow, account linking, the `password_login` switch.
+2. Spec: spec-0001 new section 6.3 and decision D41: config shape, flow, account linking, the `password_login` switch.
 3. Admin API (additive):
    1. `GET /admin/v1/auth/methods` (no auth): which sign-in methods are on, for the sign-in page.
    2. `GET /admin/v1/auth/oidc/{name}/start` and `GET /admin/v1/auth/oidc/{name}/callback`: the redirect flow, with state, nonce and PKCE. `start?link=1` links the IdP login to the signed-in user instead of signing in.
-   3. `GET /admin/v1/users/{id}/identities` and `DELETE /admin/v1/users/{id}/identities/{identity_id}`: list and remove links. Users may list and remove their own links.
-   4. The login response field `method` gains the value `oidc`.
-   5. Mirrored in `web/app/types/admin.ts`.
-4. Data: one migration adds two tables:
-   1. `admin_identities (id, user_id, issuer, subject, email, created_at, last_login_at)`, unique on `(issuer, subject)`. Rows go when the user is deleted.
-   2. `admin_oidc_flows (id_hash, provider, state, nonce, pkce_verifier, link_user_id, expires_at)`. Expired rows are deleted on each new flow.
+   3. Own links, any role: `GET /admin/v1/auth/identities` and `DELETE /admin/v1/auth/identities/{id}`.
+   4. Admin: `GET /admin/v1/users/{id}/identities`, `DELETE /admin/v1/users/{id}/identities/{identity_id}`, and `POST /admin/v1/users/{id}/identities/allow` (the one-time link, 24h).
+   5. `POST /admin/v1/users`: `password` becomes optional.
+   6. The login response field `method` gains the value `oidc`.
+   7. Mirrored in `web/app/types/admin.ts`.
+4. Data: one migration adds a column and two tables:
+   1. `admin_users.link_allowed_until` (null = no one-time link allowed).
+   2. `admin_identities (id, user_id, issuer, subject, email, created_at, last_login_at)`, unique on `(issuer, subject)`. Rows go when the user is deleted.
+   3. `admin_oidc_flows (id_hash, provider, state, nonce, pkce_verifier, link_user_id, expires_at)`. Expired rows are deleted on each new flow.
 5. Config, all optional:
    1. `admin.password_login` (default `true`).
    2. `admin.oidc.providers[]`: `name`, `title`, `issuer`, `client_id`, `client_secret`, `scopes`, `link_by_email` (default `false`).
@@ -60,10 +67,10 @@
 9. No NATS subject or payload changes.
 10. Without `admin.oidc` set, nothing changes for current installs.
 
-## 4. Open questions (for the spec)
+## 4. Decided in the spec, and left out
 
-1. Should an admin be able to remove the password of a user who signs in only by OIDC, per user, instead of only the global `password_login` switch?
-2. Should the IdP's group claim map to the gateway role later (for example `aif-admins` -> `admin`)? Not in this change.
+1. Per user, without a password: a user with no password signs in only through OIDC (section 1 item 5.3). The global `password_login` switch stays for "no passwords at all".
+2. Left out: roles from IdP groups (for example `aif-admins` -> `admin`), back-channel logout, and auto sign-up. Each can be a later change.
 
 ## 5. Roll back
 
