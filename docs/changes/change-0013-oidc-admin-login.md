@@ -1,6 +1,6 @@
 # change-0013: OIDC admin login, one local account
 
-- Status: applied (on merge of its pull request; not yet released)
+- Status: applied (released in v0.5.0)
 - Date: 2026-11-27
 - Related: [task-0025](../tasks/task-0025-oidc-admin-login.md); [spec-0001](../specs/spec-0001-gateway-core-architecture.md) sections 4.2, 6, 6.1, 6.3, 8.1, D41 and D42; [product](../products/ai-foundation.md) goal 5
 
