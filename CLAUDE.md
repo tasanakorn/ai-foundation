@@ -50,12 +50,13 @@ Guidance for Claude Code in this repository.
    | -------------------- | ------------------------------ | ---------------------------------------------------- |
    | `gateway/`           | Go gateway `aif`               | `make -C gateway vet test`                           |
    | `web/`               | Nuxt admin UI                  | `cd web && pnpm typecheck`                           |
-   | `scripts/`           | Dev tooling                    | Python, stdlib only                                  |
+   | `scripts/`           | Dev tooling                    | Python, stdlib only; `python scripts/check_docs.py`  |
    | `deploy/`            | Compose / deploy               | `docker compose -f deploy/local/compose.yaml config` |
    | `extensions/<name>/` | Example extensions (NATS only) | Runs against `make services-up`                      |
 
-2. New parts (extensions, SDKs) get a new top-level folder, for example `extensions/<name>/`.
-3. Architecture and decisions: `docs/specs/spec-0001-gateway-core-architecture.md`. Admin API shapes are mirrored in `web/app/types/admin.ts`; change both together.
-4. Backing services: NATS (JetStream) and PostgreSQL are both required (spec D14, D15). There is no SQLite. Go tests start an embedded Postgres (`internal/pgtest`) or use `AIF_TEST_PG_URL`.
-5. NATS subjects and payloads (spec §8.1) are a public contract. Version them (`.v1`); never change a released payload in a breaking way.
-6. Local env: new settings go in `.env.example` (with a comment) and are read from the repo-root `.env`. Never commit `.env`.
+2. CI (`.github/workflows/ci.yaml`) runs these checks on every pull request; a pull request merges only when they pass.
+3. New parts (extensions, SDKs) get a new top-level folder, for example `extensions/<name>/`.
+4. Architecture and decisions: `docs/specs/spec-0001-gateway-core-architecture.md`. Admin API shapes are mirrored in `web/app/types/admin.ts`; change both together.
+5. Backing services: NATS (JetStream) and PostgreSQL are both required (spec D14, D15). There is no SQLite. Go tests start an embedded Postgres (`internal/pgtest`) or use `AIF_TEST_PG_URL`.
+6. NATS subjects and payloads (spec §8.1) are a public contract. Version them (`.v1`); never change a released payload in a breaking way.
+7. Local env: new settings go in `.env.example` (with a comment) and are read from the repo-root `.env`. Never commit `.env`.

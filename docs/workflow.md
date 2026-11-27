@@ -54,5 +54,5 @@ change (draft) -> product + spec -> tasks -> code -> change (applied)
    3. Versions follow semver (semantic versioning). While on `0.x`, a breaking change raises the minor number.
    4. A fix for an older release gets a `release/vX.Y` branch only when one is needed.
 5. GitHub rules (the repository is public, so rulesets are free):
-   1. `main`: changes only through a PR, linear history, no force push, no deletion. Required checks are added when CI exists.
+   1. `main`: changes only through a PR, linear history, no force push, no deletion. The CI jobs `gateway`, `web`, `deploy` and `docs` (`.github/workflows/ci.yaml`) must pass.
    2. Tags `v*`: no update, no deletion.

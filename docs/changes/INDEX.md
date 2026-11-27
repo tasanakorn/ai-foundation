@@ -11,3 +11,4 @@
 | [change-0007](change-0007-chat-playground.md)                  | Chat playground                      | applied | 2026-11-11 |
 | [change-0008](change-0008-credit-per-account.md)               | Credit per provider account          | applied | 2026-11-27 |
 | [change-0009](change-0009-docs-first-workflow.md)              | Docs-first workflow                  | applied | 2026-11-27 |
+| [change-0010](change-0010-ci-checks.md)                        | CI checks on pull requests           | applied | 2026-11-27 |

@@ -23,3 +23,4 @@
 | [task-0019](task-0019-catalog-export-import.md)      | Catalog export and import CLI             | done   | 2026-11-27 |
 | [task-0020](task-0020-provider-accounts-policy.md)   | Provider accounts and selection policy    | done   | 2026-11-27 |
 | [task-0021](task-0021-model-routing-targets.md)      | Model routing with targets                | done   | 2026-11-27 |
+| [task-0022](task-0022-ci-checks.md)                  | CI checks on pull requests                | done   | 2026-11-27 |
