@@ -4,7 +4,9 @@ All notable changes. Format: [Keep a Changelog](https://keepachangelog.com/en/1.
 
 There is no prebuilt image or binary: build from the tag (README section 6).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-27
+
+Catalog in the database, several accounts per provider, model targets (specs 0004-0006). Upgrade notes: see Changed; migrations v4-v7 run at startup and only add tables and columns.
 
 ### Added
 
@@ -38,4 +40,5 @@ First tagged release.
    2. Prometheus metrics on their own listener (`metrics.listen`, default off).
    3. The public dev secrets are refused at startup unless `dev_mode: true`.
 
+[0.2.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.1.0
