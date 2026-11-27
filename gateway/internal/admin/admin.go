@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ai-foundation/gateway/internal/auth"
+	"ai-foundation/gateway/internal/catalog"
 	"ai-foundation/gateway/internal/clientip"
 	"ai-foundation/gateway/internal/httpx"
 	"ai-foundation/gateway/internal/keys"
@@ -90,6 +91,8 @@ func (h *Handler) Routes() http.Handler {
 	api("DELETE /admin/v1/keys/{id}", h.revokeKey)
 	api("GET /admin/v1/models", h.listModels)
 	api("GET /admin/v1/providers", h.listProviders)
+	api("GET /admin/v1/credit-entries", h.listCreditEntries)
+	api("POST /admin/v1/credit-entries", h.addCreditEntry)
 	api("GET /admin/v1/usage", h.listUsage)
 	api("GET /admin/v1/usage/summary", h.summarizeUsage)
 	if h.uiDir != "" {
@@ -162,7 +165,8 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // listProviders shows each provider with its policy and accounts, as this node sees
-// them (cooldowns are per node, spec-0004 section 8). Never a key.
+// them (cooldowns are per node, spec-0004 section 8). Never a key. An account with a
+// credit also gets its spend, from the usage table and ledger of all nodes (task-0010).
 func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	rt := h.routes.Router()
 	out := []provider.PoolState{}
@@ -172,7 +176,51 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			out = append(out, pool.State())
 		}
 	}
+	if err := catalog.FillCredits(r.Context(), h.st, out); err != nil {
+		h.fail(w, err)
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"node": h.nodeID, "data": out})
+}
+
+// ---- prepaid ledger (task-0010) ----
+
+func (h *Handler) listCreditEntries(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if (q.Get("provider") == "") != (q.Get("account") == "") {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid_filter", "give both provider and account, or neither")
+		return
+	}
+	out, err := h.st.ListCreditEntries(r.Context(), q.Get("provider"), q.Get("account"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"data": out})
+}
+
+func (h *Handler) addCreditEntry(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Provider string    `json:"provider"`
+		Account  string    `json:"account"`
+		USD      float64   `json:"usd"`
+		Note     string    `json:"note"`
+		At       time.Time `json:"at"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	e := &store.CreditEntry{Provider: in.Provider, Account: in.Account, USD: in.USD, Note: in.Note, At: in.At, Actor: actor(r)}
+	if err := catalog.AddCreditEntry(r.Context(), h.st, e); err != nil {
+		if errors.Is(err, catalog.ErrBadCreditEntry) {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request_error", "invalid_credit_entry", err.Error())
+			return
+		}
+		h.fail(w, err)
+		return
+	}
+	h.log.Info("credit entry added", "provider", e.Provider, "account", e.Account, "usd", e.USD, "actor", e.Actor)
+	httpx.WriteJSON(w, http.StatusCreated, e)
 }
 
 // ---- usage ----
@@ -181,7 +229,7 @@ func usageFilter(r *http.Request) (store.UsageFilter, error) {
 	q := r.URL.Query()
 	f := store.UsageFilter{
 		ID: q.Get("id"), KeyID: q.Get("key_id"), TenantID: q.Get("tenant_id"), AppID: q.Get("app_id"),
-		EndUser: q.Get("end_user"), Model: q.Get("model"), Account: q.Get("account"),
+		EndUser: q.Get("end_user"), Model: q.Get("model"), Provider: q.Get("provider"), Account: q.Get("account"),
 		Limit: atoi(q.Get("limit")), Offset: atoi(q.Get("offset")),
 	}
 	var err error

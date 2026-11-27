@@ -9,3 +9,4 @@
 | [change-0005](change-0005-postgres-required-sqlite-removed.md) | PostgreSQL required, SQLite removed  | applied | 2026-11-11 |
 | [change-0006](change-0006-admin-accounts-and-sessions.md)      | Built-in admin accounts and sessions | applied | 2026-11-11 |
 | [change-0007](change-0007-chat-playground.md)                  | Chat playground                      | applied | 2026-11-11 |
+| [change-0008](change-0008-credit-per-account.md)               | Credit per provider account          | applied | 2026-11-27 |

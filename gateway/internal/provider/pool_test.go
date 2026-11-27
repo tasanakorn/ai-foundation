@@ -295,3 +295,34 @@ func TestInherit(t *testing.T) {
 		t.Fatalf("after inherit: %+v", s.Accounts)
 	}
 }
+
+func TestCreditLevels(t *testing.T) {
+	for _, c := range []struct {
+		spent   float64
+		percent float64
+		level   string
+	}{{0, 0, "ok"}, {79.94, 79.9, "ok"}, {79.96, 80, "warning"}, {99.99, 100, "warning"}, {100, 100, "exhausted"}, {130, 130, "exhausted"}} {
+		s := CreditState{Type: "monthly", USD: 100}
+		s.SetSpent(c.spent)
+		if s.UsedPercent != c.percent || s.Level != c.level {
+			t.Errorf("spent %v: %v percent, %q; want %v, %q", c.spent, s.UsedPercent, s.Level, c.percent, c.level)
+		}
+	}
+}
+
+func TestPrepaidLevels(t *testing.T) {
+	var s CreditState
+	s.SetPrepaid(0, 0, nil) // no top-up yet
+	if s.Level != "exhausted" || *s.BalanceUSD != 0 {
+		t.Fatalf("empty ledger: %+v", s)
+	}
+	since := time.Now()
+	s.SetPrepaid(100, 85, &since)
+	if s.Level != "warning" || *s.BalanceUSD != 15 || *s.TopupsUSD != 100 || s.UsedPercent != 85 {
+		t.Fatalf("85 of 100: %+v", s)
+	}
+	s.SetPrepaid(100, 120, &since)
+	if s.Level != "exhausted" || *s.BalanceUSD != -20 {
+		t.Fatalf("over: %+v", s)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"ai-foundation/gateway/internal/catalog"
+	"ai-foundation/gateway/internal/store"
 )
 
 func TestExportImportRoundTrip(t *testing.T) {
@@ -105,10 +106,12 @@ providers:
     max_attempts: 2
     cooldown: 45s
     headers: { X-Team: core }
+    credit: { type: monthly, usd: 100, cycle_day: 5, timezone: Asia/Bangkok }
     accounts:
-      - { name: plan-a, api_key: "${AIF_CATALOG_TEST_KEY}", weight: 3 }
+      - { name: plan-a, api_key: "${AIF_CATALOG_TEST_KEY}", weight: 3, credit: { type: prepaid } }
       - { name: plan-b, api_key: file:/run/secrets/b, weight: 1, workspace_id: wrk_b, headers: { X-Extra: "1" } }
       - { name: old, api_key: env:OLD_KEY, weight: 0, base_url: https://other.example/v1 }
+  - { name: short, type: openai, base_url: "http://x/v1", api_key: env:SHORT_KEY, credit: { type: payg, usd: 20, cycle_day: 31 } }
 models:
   - { name: sonnet, provider: claude }
 `))
@@ -116,6 +119,9 @@ models:
 		t.Fatal(err)
 	}
 	p := src.Providers[0]
+	if *p.Accounts[0].Credit != (store.Credit{Type: "prepaid"}) || *p.Accounts[1].Credit != (store.Credit{Type: "monthly", USD: 100, CycleDay: 5, Timezone: "Asia/Bangkok"}) {
+		t.Fatalf("credits from file: %+v %+v", p.Accounts[0].Credit, p.Accounts[1].Credit)
+	}
 	if len(p.Accounts) != 3 || p.Accounts[0].KeyRef != "env:AIF_CATALOG_TEST_KEY" || *p.Accounts[2].Weight != 0 || p.Policy != "round_robin" {
 		t.Fatalf("from file: %+v", p)
 	}
@@ -123,7 +129,9 @@ models:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"policy: round_robin", "sticky: session", "cooldown: 45s", "accounts:", "name: plan-b", "weight: 0"} {
+	for _, want := range []string{"policy: round_robin", "sticky: session", "cooldown: 45s", "accounts:", "name: plan-b", "weight: 0",
+		"type: prepaid\n", "usd: 100\n", "cycle_day: 5\n", "timezone: Asia/Bangkok\n",
+		"api_key: env:SHORT_KEY\n    credit:\n      type: payg\n      usd: 20\n      cycle_day: 31\n"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("export misses %q:\n%s", want, out)
 		}

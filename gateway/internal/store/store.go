@@ -90,6 +90,7 @@ type UsageFilter struct {
 	AppID    string
 	EndUser  string
 	Model    string
+	Provider string
 	Account  string
 	Limit    int
 	Offset   int
@@ -186,6 +187,29 @@ type CatalogAccount struct {
 	BaseURL     string            `json:"base_url,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	WorkspaceID string            `json:"workspace_id,omitempty"`
+	Credit      *Credit           `json:"credit,omitempty"` // how the account is paid for; nil = not tracked (task-0010)
+}
+
+// Credit is an account's credit type and its cycle (same fields as config.Credit).
+type Credit struct {
+	Type     string  `json:"type"` // monthly, prepaid or payg
+	USD      float64 `json:"usd,omitempty"`
+	CycleDay int     `json:"cycle_day,omitempty"`
+	Timezone string  `json:"timezone,omitempty"`
+}
+
+// CreditEntry is one line of a prepaid account's ledger: a top-up (USD above 0) or a
+// correction (either sign). The ledger is append-only and lives only in the database;
+// it is not part of the catalog. Accounts are matched by provider and account name.
+type CreditEntry struct {
+	ID        string    `json:"id"`
+	Provider  string    `json:"provider"`
+	Account   string    `json:"account"`
+	USD       float64   `json:"usd"`
+	Note      string    `json:"note"`
+	At        time.Time `json:"at"` // when the money arrived; spend counts from the first entry
+	CreatedAt time.Time `json:"created_at"`
+	Actor     string    `json:"actor"` // admin user ID, "master_key" or "cli"
 }
 
 type CatalogModel struct {
@@ -262,6 +286,11 @@ type Store interface {
 	// whole catalog is written, the revision goes up by one and a change row is added.
 	UpdateCatalog(ctx context.Context, ifRevision int64, actor, summary string, fn func(*Catalog) error) (*Catalog, error)
 	ListCatalogChanges(ctx context.Context, limit int) ([]CatalogChange, error)
+
+	AddCreditEntry(ctx context.Context, e *CreditEntry) error
+	// ListCreditEntries returns the ledger of one account (both set) or of all
+	// accounts (both empty), newest first.
+	ListCreditEntries(ctx context.Context, provider, account string) ([]CreditEntry, error)
 
 	Close() error
 }

@@ -47,6 +47,8 @@ type env struct {
 	upURL    string
 	mut      []func(*config.Config)
 	upstream *[]map[string]any // request bodies seen by the fake upstream
+	// seenUsage is how many usage records the last usage() call saw; shared with peers.
+	seenUsage *int
 }
 
 // fakeUpstream mimics an OpenAI-compatible API.
@@ -100,7 +102,7 @@ func newEnv(t *testing.T, mut ...func(*config.Config)) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	e := &env{t: t, st: st, natsURL: natstest.Run(t), upURL: up.URL, mut: mut, upstream: seen}
+	e := &env{t: t, st: st, natsURL: natstest.Run(t), upURL: up.URL, mut: mut, upstream: seen, seenUsage: new(int)}
 	e.start()
 	return e
 }
@@ -181,13 +183,26 @@ func (e *env) createKey(body string) (secret, id string) {
 }
 
 // usage flushes the recorder and returns all records, newest first.
+// usage returns all usage records, newest first. Records are written after the
+// response and in batches, so it waits (up to 3s) until a record newer than the last
+// call has arrived, then a little more for records of the same flush.
 func (e *env) usage() []store.UsageRecord {
 	e.t.Helper()
-	time.Sleep(50 * time.Millisecond)
-	recs, err := e.st.ListUsage(context.Background(), store.UsageFilter{})
-	if err != nil {
-		e.t.Fatal(err)
+	list := func() []store.UsageRecord {
+		recs, err := e.st.ListUsage(context.Background(), store.UsageFilter{})
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		return recs
 	}
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		if recs := list(); len(recs) > *e.seenUsage {
+			break
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	recs := list()
+	*e.seenUsage = len(recs)
 	return recs
 }
 

@@ -123,7 +123,7 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		return nil, err
 	}
 
-	rows, err = q.Query(ctx, `SELECT provider, name, key_ref, key_cipher, key_id, key_hint, weight, base_url, headers, workspace_id FROM catalog_accounts ORDER BY provider, position`)
+	rows, err = q.Query(ctx, `SELECT provider, name, key_ref, key_cipher, key_id, key_hint, weight, base_url, headers, workspace_id, credit_type, credit_usd, credit_cycle_day, credit_timezone FROM catalog_accounts ORDER BY provider, position`)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +131,9 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		var prov string
 		var a store.CatalogAccount
 		var headers []byte
-		if err := rows.Scan(&prov, &a.Name, &a.KeyRef, &a.KeyCipher, &a.KeyID, &a.KeyHint, &a.Weight, &a.BaseURL, &headers, &a.WorkspaceID); err != nil {
+		var cr store.Credit
+		if err := rows.Scan(&prov, &a.Name, &a.KeyRef, &a.KeyCipher, &a.KeyID, &a.KeyHint, &a.Weight, &a.BaseURL, &headers, &a.WorkspaceID,
+			&cr.Type, &cr.USD, &cr.CycleDay, &cr.Timezone); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -141,6 +143,9 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		}
 		if len(a.Headers) == 0 {
 			a.Headers = nil // account headers are only overrides
+		}
+		if cr.Type != "" {
+			a.Credit = &cr
 		}
 		if i, ok := byName[prov]; ok {
 			c.Providers[i].Accounts = append(c.Providers[i].Accounts, a)
@@ -216,9 +221,15 @@ func writeCatalog(ctx context.Context, tx pgx.Tx, c *store.Catalog) error {
 			p.Name, i, p.Type, p.BaseURL, headers, p.WorkspaceID, p.OpenAIFormat, p.Policy, p.Sticky, p.MaxAttempts, p.Cooldown.Milliseconds())
 		for j, a := range p.Accounts {
 			ah, _ := json.Marshal(nonNilMap(a.Headers))
-			b.Queue(`INSERT INTO catalog_accounts (provider, name, position, key_ref, key_cipher, key_id, key_hint, weight, base_url, headers, workspace_id)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-				p.Name, a.Name, j, a.KeyRef, a.KeyCipher, a.KeyID, a.KeyHint, a.Weight, a.BaseURL, ah, a.WorkspaceID)
+			var cr store.Credit
+			if a.Credit != nil {
+				cr = *a.Credit
+			}
+			b.Queue(`INSERT INTO catalog_accounts (provider, name, position, key_ref, key_cipher, key_id, key_hint, weight, base_url, headers, workspace_id,
+					credit_type, credit_usd, credit_cycle_day, credit_timezone)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+				p.Name, a.Name, j, a.KeyRef, a.KeyCipher, a.KeyID, a.KeyHint, a.Weight, a.BaseURL, ah, a.WorkspaceID,
+				cr.Type, cr.USD, cr.CycleDay, cr.Timezone)
 		}
 	}
 	for i, m := range c.Models {
@@ -237,4 +248,34 @@ func writeCatalog(ctx context.Context, tx pgx.Tx, c *store.Catalog) error {
 		return fmt.Errorf("write catalog: %w", mapErr(err))
 	}
 	return nil
+}
+
+func (s *Store) AddCreditEntry(ctx context.Context, e *store.CreditEntry) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO credit_ledger (id, provider, account, usd, note, at, created_at, actor) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		e.ID, e.Provider, e.Account, e.USD, e.Note, e.At, e.CreatedAt, e.Actor)
+	return mapErr(err)
+}
+
+func (s *Store) ListCreditEntries(ctx context.Context, provider, account string) ([]store.CreditEntry, error) {
+	q := `SELECT id, provider, account, usd, note, at, created_at, actor FROM credit_ledger`
+	var args []any
+	if provider != "" || account != "" {
+		q += ` WHERE provider = $1 AND account = $2`
+		args = []any{provider, account}
+	}
+	rows, err := s.pool.Query(ctx, q+` ORDER BY at DESC, id DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.CreditEntry{}
+	for rows.Next() {
+		var e store.CreditEntry
+		if err := rows.Scan(&e.ID, &e.Provider, &e.Account, &e.USD, &e.Note, &e.At, &e.CreatedAt, &e.Actor); err != nil {
+			return nil, err
+		}
+		e.At, e.CreatedAt = e.At.UTC(), e.CreatedAt.UTC()
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

@@ -280,6 +280,14 @@ func (h *Handler) forward(endpoint string) http.HandlerFunc {
 			return
 		}
 		defer resp.Body.Close()
+		if trace.Outcome == provider.OutcomeNoCredits && resp.StatusCode >= 400 {
+			// The last account tried is out of credits: a clear error, not the provider's
+			// own 400 (spec-0002 section 8.1.1). The Anthropic API passes it through unchanged.
+			rec.StatusCode, rec.Error = http.StatusPaymentRequired, "provider_credit_exhausted: "+rec.Provider+"/"+rec.Account
+			httpx.WriteError(w, http.StatusPaymentRequired, "upstream_error", "provider_credit_exhausted",
+				"the provider account is out of credits; try again later or ask the gateway admin")
+			return
+		}
 
 		isSSE := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
 		if p.stream && resp.StatusCode == http.StatusOK && isSSE {

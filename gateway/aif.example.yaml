@@ -112,7 +112,16 @@ providers:
     # sticky: session            # round_robin: keep a conversation on one account (prompt cache)
     # accounts:
     #   - { name: plan-a, api_key: "${ANTHROPIC_KEY_A}", weight: 3 }
-    #   - { name: plan-b, api_key: "${ANTHROPIC_KEY_B}", weight: 1 }
+    #   - { name: plan-b, api_key: "${ANTHROPIC_KEY_B}", weight: 1, credit: { type: prepaid } }
+    # Credit (docs/tasks/task-0010): how an account is paid for. One type per account;
+    # an org with a plan credit and purchased credits is two accounts. The Providers page
+    # shows the metered spend against it, with a warning at 80 percent. On the provider
+    # it is the default of every account; an account's own credit wins.
+    #   monthly: a plan credit that resets each cycle (usd, cycle_day 1-31, timezone)
+    #   payg:    billed later; usd is a budget per cycle, for the warning only
+    #   prepaid: a balance; top-ups are recorded in the database (aif credit add, or the
+    #            Providers page), never in this file
+    # credit: { type: monthly, usd: 100, cycle_day: 5, timezone: Asia/Bangkok }
 
   # llama.cpp:  llama-server -m model.gguf --port 8090 --alias qwen
   #             add "--embeddings --pooling mean" to serve /v1/embeddings

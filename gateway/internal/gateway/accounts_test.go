@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ai-foundation/gateway/internal/catalog"
 	"ai-foundation/gateway/internal/store"
@@ -111,5 +113,161 @@ func TestAccountsFailover(t *testing.T) {
 		if !strings.Contains(buf.String(), line+"\n") {
 			t.Errorf("metrics miss %s", line)
 		}
+	}
+}
+
+// Credit per account (task-0010): the providers API shows the spend of the cycle
+// (monthly) and the balance of the ledger (prepaid); top-ups go through the admin
+// API; an account out of credits gives OpenAI-format clients provider_credit_exhausted.
+func TestAccountCredit(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	broke := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+		io.WriteString(w, `{"error":{"message":"no credits"}}`)
+	}))
+	defer broke.Close()
+
+	c, err := catalog.Update(ctx, e.st, store.AnyRevision, "test", "credit", func(c *store.Catalog) error {
+		c.Providers = append(c.Providers,
+			store.CatalogProvider{Name: "credited", Type: "openai", BaseURL: e.upURL + "/v1", Accounts: []store.CatalogAccount{
+				{Name: "plan-a", KeyRef: "env:AIF_TEST_UPSTREAM_KEY", Credit: &store.Credit{Type: "monthly", USD: 100, CycleDay: 1, Timezone: "Asia/Bangkok"}},
+				{Name: "plan-b", KeyRef: "env:AIF_TEST_UPSTREAM_KEY"},
+			}},
+			store.CatalogProvider{Name: "pre", Type: "openai", BaseURL: e.upURL + "/v1", Accounts: []store.CatalogAccount{
+				{Name: "wallet", KeyRef: "env:AIF_TEST_UPSTREAM_KEY", Credit: &store.Credit{Type: "prepaid"}},
+			}},
+			store.CatalogProvider{Name: "broke", Type: "openai", BaseURL: broke.URL + "/v1", Accounts: []store.CatalogAccount{
+				{Name: "only", KeyRef: "env:AIF_TEST_UPSTREAM_KEY"},
+			}})
+		price := &store.Price{Input: 1000, Output: 10000}
+		c.Models = append(c.Models,
+			store.CatalogModel{Name: "credited-model", Targets: []store.CatalogTarget{{Provider: "credited", Upstream: "vendor/m", Price: price}}},
+			store.CatalogModel{Name: "pre-model", Targets: []store.CatalogTarget{{Provider: "pre", Upstream: "vendor/m", Price: price}}},
+			store.CatalogModel{Name: "broke-model", Targets: []store.CatalogTarget{{Provider: "broke", Upstream: "vendor/m"}}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.app.Catalogs.Committed(ctx, c.Revision); err != nil {
+		t.Fatal(err)
+	}
+	secret, _ := e.createKey(`{}`)
+	chat := func(model string) (int, string) {
+		return e.do(e.gw.URL, "POST", "/v1/chat/completions", secret, `{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`)
+	}
+
+	type creditJSON struct {
+		Type        string
+		USD         float64    `json:"usd"`
+		Timezone    string     `json:"timezone"`
+		CycleStart  *time.Time `json:"cycle_start"`
+		CycleEnd    *time.Time `json:"cycle_end"`
+		TopupsUSD   *float64   `json:"topups_usd"`
+		BalanceUSD  *float64   `json:"balance_usd"`
+		Since       *time.Time `json:"since"`
+		SpentUSD    float64    `json:"spent_usd"`
+		UsedPercent float64    `json:"used_percent"`
+		Level       string
+	}
+	credit := func(prov, account string) *creditJSON {
+		t.Helper()
+		code, out := e.do(e.admin.URL, "GET", "/admin/v1/providers", masterKey, "")
+		if code != 200 {
+			t.Fatalf("providers: %d %s", code, out)
+		}
+		var resp struct {
+			Data []struct {
+				Name     string
+				Accounts []struct {
+					Name   string
+					Credit *creditJSON
+				}
+			}
+		}
+		if err := json.Unmarshal([]byte(out), &resp); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range resp.Data {
+			for _, a := range p.Accounts {
+				if p.Name == prov && a.Name == account {
+					return a.Credit
+				}
+			}
+		}
+		t.Fatalf("no %s/%s: %s", prov, account, out)
+		return nil
+	}
+
+	// monthly: the spend of the cycle, which starts at midnight in Bangkok.
+	if code, out := chat("credited-model"); code != 200 {
+		t.Fatalf("credited: %d %s", code, out)
+	}
+	cost := e.usage()[0].CostUSD
+	if cost <= 0 || cost >= 50 {
+		t.Fatalf("cost %v: the test needs a cost between 0 and half the credit", cost)
+	}
+	bkk, _ := time.LoadLocation("Asia/Bangkok")
+	now := time.Now().In(bkk)
+	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, bkk)
+	if a := credit("credited", "plan-a"); a == nil || a.Type != "monthly" || a.USD != 100 || a.Timezone != "Asia/Bangkok" ||
+		!a.CycleStart.Equal(first) || !a.CycleEnd.Equal(first.AddDate(0, 1, 0)) || math.Abs(a.SpentUSD-cost) > 1e-9 ||
+		a.Level != map[bool]string{true: "warning", false: "ok"}[cost >= 80] || a.TopupsUSD != nil {
+		t.Fatalf("plan-a credit: %+v (cost %v)", a, cost)
+	}
+	if b := credit("credited", "plan-b"); b != nil {
+		t.Fatalf("plan-b has no credit: %+v", b)
+	}
+
+	// prepaid: an empty ledger, then top-ups through the admin API.
+	if w := credit("pre", "wallet"); w.Type != "prepaid" || *w.BalanceUSD != 0 || w.Since != nil || w.Level != "exhausted" || w.CycleStart != nil {
+		t.Fatalf("empty ledger: %+v", w)
+	}
+	for name, body := range map[string]string{
+		"not prepaid":   `{"provider":"credited","account":"plan-a","usd":5}`,
+		"zero":          `{"provider":"pre","account":"wallet","usd":0}`,
+		"future":        `{"provider":"pre","account":"wallet","usd":5,"at":"2999-01-01T00:00:00Z"}`,
+		"unknown field": `{"provider":"pre","account":"wallet","usd":5,"balance":1}`,
+	} {
+		if code, out := e.do(e.admin.URL, "POST", "/admin/v1/credit-entries", masterKey, body); code != 400 {
+			t.Errorf("%s: %d %s", name, code, out)
+		}
+	}
+	if code, _ := e.do(e.admin.URL, "POST", "/admin/v1/credit-entries", masterKey, `{"provider":"pre","account":"nope","usd":5}`); code != 404 {
+		t.Errorf("unknown account: %d", code)
+	}
+	since := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if code, out := e.do(e.admin.URL, "POST", "/admin/v1/credit-entries", masterKey,
+		`{"provider":"pre","account":"wallet","usd":20,"note":"invoice 7","at":"`+since.Format(time.RFC3339)+`"}`); code != 201 || !strings.Contains(out, `"actor":"master_key"`) {
+		t.Fatalf("top-up: %d %s", code, out)
+	}
+	if code, out := e.do(e.admin.URL, "POST", "/admin/v1/credit-entries", masterKey, `{"provider":"pre","account":"wallet","usd":-2.5,"note":"match the console"}`); code != 201 {
+		t.Fatalf("correction: %d %s", code, out)
+	}
+	if code, out := chat("pre-model"); code != 200 {
+		t.Fatalf("prepaid request: %d %s", code, out)
+	}
+	pcost := e.usage()[0].CostUSD
+	w := credit("pre", "wallet")
+	if *w.TopupsUSD != 17.5 || math.Abs(*w.BalanceUSD-(17.5-pcost)) > 1e-9 || !w.Since.Equal(since) || math.Abs(w.SpentUSD-pcost) > 1e-9 {
+		t.Fatalf("prepaid credit: %+v (cost %v)", w, pcost)
+	}
+	code, out := e.do(e.admin.URL, "GET", "/admin/v1/credit-entries?provider=pre&account=wallet", masterKey, "")
+	if code != 200 || strings.Count(out, `"id":"cre_`) != 2 || !strings.Contains(out, `"note":"invoice 7"`) {
+		t.Fatalf("ledger: %d %s", code, out)
+	}
+	if code, _ := e.do(e.admin.URL, "GET", "/admin/v1/credit-entries?provider=pre", masterKey, ""); code != 400 {
+		t.Fatalf("provider without account: %d", code)
+	}
+
+	// Out of credits: a clear error on the OpenAI format.
+	code, out = chat("broke-model")
+	if code != http.StatusPaymentRequired || !strings.Contains(out, `"code":"provider_credit_exhausted"`) || strings.Contains(out, "no credits") {
+		t.Fatalf("out of credits: %d %s", code, out)
+	}
+	if r := e.usage()[0]; r.StatusCode != http.StatusPaymentRequired || r.Account != "only" || !strings.HasPrefix(r.Error, "provider_credit_exhausted") {
+		t.Fatalf("usage record: %+v", r)
 	}
 }

@@ -99,7 +99,7 @@ func FromCatalogFile(cfg *config.CatalogOnly) (*store.Catalog, error) {
 				return nil, &InvalidError{fmt.Errorf("provider %q account %q: api_key is a value written in the file; put the key in an environment variable and write ${NAME}, or use env:NAME or file:/path (keys are never stored in the database)", p.Name, a.Name)}
 			}
 			sp.Accounts = append(sp.Accounts, store.CatalogAccount{Name: a.Name, KeyRef: a.KeyRef, Weight: a.Weight,
-				BaseURL: a.BaseURL, Headers: copyMap(a.Headers), WorkspaceID: a.WorkspaceID})
+				BaseURL: a.BaseURL, Headers: copyMap(a.Headers), WorkspaceID: a.WorkspaceID, Credit: toStoreCredit(a.Credit)})
 		}
 		c.Providers = append(c.Providers, sp)
 	}
@@ -279,6 +279,9 @@ func toConfig(c *store.Catalog, kr *Keyring, resolve bool) ([]config.Provider, [
 				return nil, nil, invalid("provider %q account %q: %v", p.Name, a.Name, err)
 			}
 			ca := config.Account{Name: a.Name, Weight: a.Weight, BaseURL: a.BaseURL, Headers: copyMap(a.Headers), WorkspaceID: a.WorkspaceID}
+			if a.Credit != nil {
+				ca.Credit = &config.Credit{Type: a.Credit.Type, USD: a.Credit.USD, CycleDay: a.Credit.CycleDay, Timezone: a.Credit.Timezone}
+			}
 			if resolve {
 				key, err := ResolveKey(a.KeyRef)
 				if a.KeyCipher != nil {
@@ -314,6 +317,13 @@ func toConfig(c *store.Catalog, kr *Keyring, resolve bool) ([]config.Provider, [
 		return nil, nil, &InvalidError{err}
 	}
 	return providers, models, nil
+}
+
+func toStoreCredit(c *config.Credit) *store.Credit {
+	if c == nil {
+		return nil
+	}
+	return &store.Credit{Type: c.Type, USD: c.USD, CycleDay: c.CycleDay, Timezone: c.Timezone}
 }
 
 // checkAccountKey checks that an account holds its key in exactly one allowed form.

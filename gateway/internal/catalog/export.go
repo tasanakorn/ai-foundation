@@ -33,6 +33,7 @@ type exportProvider struct {
 	Sticky       string            `yaml:"sticky,omitempty"`
 	MaxAttempts  int               `yaml:"max_attempts,omitempty"`
 	Cooldown     string            `yaml:"cooldown,omitempty"`
+	Credit       *exportCredit     `yaml:"credit,omitempty"`
 	Accounts     []exportAccount   `yaml:"accounts,omitempty"`
 }
 
@@ -43,6 +44,30 @@ type exportAccount struct {
 	BaseURL     string            `yaml:"base_url,omitempty"`
 	Headers     map[string]string `yaml:"headers,omitempty"`
 	WorkspaceID string            `yaml:"workspace_id,omitempty"`
+	Credit      *exportCredit     `yaml:"credit,omitempty"`
+}
+
+// exportCredit is the credit type and cycle. A prepaid ledger is not exported: it is
+// data in the database, not part of the catalog.
+type exportCredit struct {
+	Type     string  `yaml:"type"`
+	USD      float64 `yaml:"usd,omitempty"`
+	CycleDay int     `yaml:"cycle_day,omitempty"`
+	Timezone string  `yaml:"timezone,omitempty"`
+}
+
+func toExportCredit(c *store.Credit) *exportCredit {
+	if c == nil {
+		return nil
+	}
+	out := &exportCredit{Type: c.Type, USD: c.USD, CycleDay: c.CycleDay, Timezone: c.Timezone}
+	if out.CycleDay == 1 {
+		out.CycleDay = 0 // defaults stay out
+	}
+	if out.Timezone == "UTC" {
+		out.Timezone = ""
+	}
+	return out
 }
 
 type exportModel struct {
@@ -105,11 +130,11 @@ func Export(c *store.Catalog) ([]byte, error) {
 		}
 		if a := p.Accounts; len(a) == 1 && a[0].Name == DefaultAccount && a[0].Weight == nil && a[0].BaseURL == "" &&
 			len(a[0].Headers) == 0 && a[0].WorkspaceID == "" {
-			ep.APIKey = a[0].KeyRef // the short api_key form
+			ep.APIKey, ep.Credit = a[0].KeyRef, toExportCredit(a[0].Credit) // the short api_key form
 		} else {
 			for _, a := range p.Accounts {
 				ep.Accounts = append(ep.Accounts, exportAccount{Name: a.Name, APIKey: a.KeyRef, Weight: a.Weight,
-					BaseURL: a.BaseURL, Headers: a.Headers, WorkspaceID: a.WorkspaceID})
+					BaseURL: a.BaseURL, Headers: a.Headers, WorkspaceID: a.WorkspaceID, Credit: toExportCredit(a.Credit)})
 			}
 		}
 		out.Providers = append(out.Providers, ep)

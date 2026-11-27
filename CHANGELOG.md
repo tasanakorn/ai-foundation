@@ -4,6 +4,15 @@ All notable changes. Format: [Keep a Changelog](https://keepachangelog.com/en/1.
 
 There is no prebuilt image or binary: build from the tag (README section 6).
 
+## [Unreleased]
+
+### Added
+
+1. Credit per provider account (task-0010): `credit` with `type` `monthly` (plan credit per cycle), `payg` (budget per cycle) or `prepaid` (a balance), plus `usd`, `cycle_day` and `timezone` for the cycle types. It goes on an account, or on the provider as the default of its accounts (migration v8). `GET /admin/v1/providers` and the Providers page show the spend against it, with a warning at 80 percent.
+2. Prepaid ledger, in the database only: `GET` and `POST /admin/v1/credit-entries`, `aif credit add | list`, and a top-up dialog on the Providers page. Entries are append-only; a negative amount corrects the balance.
+3. OpenAI-format requests get `402` with code `provider_credit_exhausted` when the last account tried is out of credits, instead of the provider's own error. The Anthropic API still passes the provider's error through unchanged.
+4. The usage API filters by `provider`.
+
 ## [0.2.0] - 2026-11-27
 
 Catalog in the database, several accounts per provider, model targets (specs 0004-0006). Upgrade notes: see Changed; migrations v4-v7 run at startup and only add tables and columns.

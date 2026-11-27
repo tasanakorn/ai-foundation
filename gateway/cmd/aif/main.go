@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // credit time zones work in a minimal image without zoneinfo files
 
 	"ai-foundation/gateway/internal/app"
 	"ai-foundation/gateway/internal/bus"
@@ -33,6 +34,10 @@ const usage = `Usage:
   aif catalog set-key -provider P [-account A]
                                           store an encrypted provider key (needs catalog.secret_keys)
   aif catalog history [-limit N]          list catalog revisions
+  aif credit add -provider P [-account A] -usd N [-note T] [-at DATE]
+                                          record a top-up (or a negative correction) of a prepaid account
+  aif credit list [-provider P [-account A]]
+                                          list the prepaid ledger
   aif version
 
 Admin commands read the password, and set-key the provider key, from the terminal
@@ -61,6 +66,8 @@ func main() {
 		err = adminCommand(args)
 	case "catalog":
 		err = catalogCommand(args)
+	case "credit":
+		err = creditCommand(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return

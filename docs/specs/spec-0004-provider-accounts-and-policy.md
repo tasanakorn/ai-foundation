@@ -140,7 +140,7 @@ Weighted round robin, 3:1 (plan-a gets 3 of every 4 requests):
 ## 11. Open questions
 
 1. Moved: cross-provider fallback is [spec-0005](spec-0005-model-routing-targets.md) (model routing with targets).
-2. How to detect "out of credits" reliably per provider, and how long to rest: a fixed 1h, or until the next billing cycle (task-0010 credit awareness)?
+2. How to detect "out of credits" reliably per provider, and how long to rest: a fixed 1h, or until the next billing cycle? task-0010 added a `credit` block per account (monthly credit and billing day), so resting until the cycle ends is now possible; today the rest is still 1h.
 3. Resolved: weights are part of `round_robin` (section 4.2).
 4. `weight: 0` drains an account in round_robin (4.2.5). Do we also need a drain switch for `priority`, or in the admin API without a restart?
 
