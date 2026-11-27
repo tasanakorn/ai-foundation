@@ -6,6 +6,10 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
+Credit per provider account (task-0010, change-0008). Upgrade notes: migration v8 runs at startup and only adds columns, a table and an index. An older binary refuses a v8 database, so going back to 0.2.0 needs the manual SQL in change-0008 section 4. One client-visible change: an out-of-credits error on the OpenAI format is now `402 provider_credit_exhausted` (Added 3).
+
 ### Added
 
 1. Credit per provider account (task-0010): `credit` with `type` `monthly` (plan credit per cycle), `payg` (budget per cycle) or `prepaid` (a balance), plus `usd`, `cycle_day` and `timezone` for the cycle types. It goes on an account, or on the provider as the default of its accounts (migration v8). `GET /admin/v1/providers` and the Providers page show the spend against it, with a warning at 80 percent.
@@ -49,5 +53,6 @@ First tagged release.
    2. Prometheus metrics on their own listener (`metrics.listen`, default off).
    3. The public dev secrets are refused at startup unless `dev_mode: true`.
 
+[0.3.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.3.0
 [0.2.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.2.0
 [0.1.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.1.0
