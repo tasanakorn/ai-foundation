@@ -179,9 +179,10 @@ func Describe(c *store.Catalog) string {
 // Env is what building a snapshot needs besides the catalog.
 type Env struct {
 	Client   *http.Client
-	Keyring  *Keyring          // decrypts encrypted keys; nil = references only
-	Observer provider.Observer // optional: upstream attempt metrics
-	Log      *slog.Logger      // optional: failed upstream attempts
+	Keyring  *Keyring           // decrypts encrypted keys; nil = references only
+	Observer provider.Observer  // optional: upstream attempt metrics
+	Log      *slog.Logger       // optional: failed upstream attempts
+	Sync     provider.StateSync // optional: shares account cooldowns with the other nodes
 }
 
 // Load reads the catalog from the database and builds a snapshot.
@@ -202,7 +203,7 @@ func Build(c *store.Catalog, env Env) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	built, err := provider.Build(providers, provider.BuildOptions{Client: env.Client, Observer: env.Observer, Log: env.Log})
+	built, err := provider.Build(providers, provider.BuildOptions{Client: env.Client, Observer: env.Observer, Log: env.Log, Sync: env.Sync})
 	if err != nil {
 		return nil, err
 	}

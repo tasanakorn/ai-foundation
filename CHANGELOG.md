@@ -6,6 +6,10 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+### Changed
+
+1. Provider account state is shared by all gateway nodes (change-0012, spec-0004 D40). A rest that one node sees (rate limit, outage, bad key, no credits) makes every node skip that account, and a node that starts or reconnects loads the current rests. It uses the NATS JetStream KV bucket `AIF_ACCOUNT_STATE` (`nats.state.bucket`), made by the first node. Without JetStream, each node keeps its own state as before. The Providers page shows one state for all nodes.
+
 ## [0.3.0] - 2026-11-27
 
 Credit per provider account (task-0010, change-0008). Upgrade notes: migration v8 runs at startup and only adds columns, a table and an index. An older binary refuses a v8 database, so going back to 0.2.0 needs the manual SQL in change-0008 section 4. One client-visible change: an out-of-credits error on the OpenAI format is now `402 provider_credit_exhausted` (Added 3).

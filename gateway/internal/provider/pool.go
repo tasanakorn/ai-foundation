@@ -76,8 +76,8 @@ func WithIdentity(ctx context.Context, id Identity) context.Context {
 
 // Pool is one provider with its accounts. It picks an account by the provider's policy
 // and fails over to the next one on errors another account can fix, before the first
-// byte reaches the client (spec-0004 sections 4 and 5, D27, D28). State (round-robin
-// position, cooldowns) is per node, in memory (D29).
+// byte reaches the client (spec-0004 sections 4 and 5, D27, D28). Cooldowns are shared
+// with the other nodes through sync (D40); the round-robin position is per node.
 type Pool struct {
 	name, typ   string
 	policy      string
@@ -85,6 +85,7 @@ type Pool struct {
 	maxAttempts int
 	cooldown    time.Duration
 	obs         Observer
+	sync        StateSync // nil = this node only
 	log         *slog.Logger
 	now         func() time.Time
 	mu          sync.Mutex
@@ -101,6 +102,7 @@ type member struct {
 	until   time.Time
 	lastErr string
 	lastAt  time.Time
+	changed time.Time // when the state last changed, here or on another node
 }
 
 // NativePool is a Pool of providers that also serve their own API format (Anthropic).
@@ -124,7 +126,7 @@ func newPool(c config.Provider, members []*member, o BuildOptions) *Pool {
 		names[i], weights[i] = m.name, m.weight
 	}
 	return &Pool{name: c.Name, typ: c.Type, policy: c.Policy, sticky: c.Sticky, maxAttempts: c.MaxAttempts,
-		cooldown: c.Cooldown, obs: o.Observer, log: log, now: time.Now, members: members,
+		cooldown: c.Cooldown, obs: o.Observer, sync: o.Sync, log: log, now: time.Now, members: members,
 		sel: NewSelector(c.Policy, c.Sticky, names, weights)}
 }
 
@@ -248,15 +250,28 @@ func retryAfter(h string, now time.Time, fallback time.Duration) time.Duration {
 	return min(d, maxRetryAfter)
 }
 
+// record keeps the outcome of one attempt. A rest that starts, or a success that ends a
+// rest or clears an error, is shared with the other nodes.
 func (p *Pool) record(m *member, outcome string, rest time.Duration, msg string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	now := p.now()
+	changed := false
 	switch {
 	case outcome == OutcomeOK:
+		changed = !m.until.IsZero() || m.lastErr != ""
 		m.until, m.lastErr = time.Time{}, ""
 	case rest > 0:
-		now := p.now()
 		m.until, m.lastErr, m.lastAt = now.Add(rest), msg, now
+		changed = true
+	}
+	var ev AccountEvent
+	if changed {
+		m.changed = now
+		ev = p.event(m)
+	}
+	p.mu.Unlock()
+	if changed && p.sync != nil {
+		p.sync.Publish(ev)
 	}
 }
 
@@ -369,7 +384,7 @@ func creditLevel(limit, spent float64) (float64, string) {
 	return pct, "ok"
 }
 
-// PoolState is a provider with its policy and accounts, on this node.
+// PoolState is a provider with its policy and accounts.
 type PoolState struct {
 	Name        string         `json:"name"`
 	Type        string         `json:"type"`
@@ -430,7 +445,7 @@ func (p *Pool) Inherit(old *Pool) {
 	defer p.mu.Unlock()
 	for _, m := range p.members {
 		if o, ok := prev[m.name]; ok {
-			m.until, m.lastErr, m.lastAt = o.until, o.lastErr, o.lastAt
+			m.until, m.lastErr, m.lastAt, m.changed = o.until, o.lastErr, o.lastAt, o.changed
 		}
 	}
 	p.sel.Inherit(old.sel)

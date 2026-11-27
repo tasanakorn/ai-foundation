@@ -25,3 +25,4 @@
 | [task-0021](task-0021-model-routing-targets.md)      | Model routing with targets                | done   | 2026-11-27 |
 | [task-0022](task-0022-ci-checks.md)                  | CI checks on pull requests                | done   | 2026-11-27 |
 | [task-0023](task-0023-product-doc-services.md)       | Product doc: required services            | done   | 2026-11-27 |
+| [task-0024](task-0024-shared-account-state.md)       | Shared account state across nodes         | done   | 2026-11-27 |

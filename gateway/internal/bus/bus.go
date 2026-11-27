@@ -7,6 +7,7 @@
 //	<control.subject_prefix>.key_revoked      {"type","id","node","at"}; every node drops the key
 //	<control.subject_prefix>.catalog_changed  {"type","revision","node","at"}; every node reloads the catalog
 //	<hooks.pre_request.subject>             request/reply; see package hook
+//	KV bucket <state.bucket>                provider account state, shared by all nodes; see AccountSync
 package bus
 
 import (

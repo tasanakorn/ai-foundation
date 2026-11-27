@@ -88,7 +88,16 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 	if err != nil {
 		return nil, fmt.Errorf("catalog.secret_keys: %w", err)
 	}
+	// Account cooldowns are shared by all nodes through a NATS KV bucket (spec-0004 D40).
+	sync, err := nb.AccountSync(ctx)
+	if err != nil {
+		log.Warn("provider account state is per node: no shared bucket", "err", err)
+		sync = nil
+	}
 	env := catalog.Env{Client: provider.NewHTTPClient(), Keyring: kr, Observer: a.Metrics, Log: log}
+	if sync != nil {
+		env.Sync = sync
+	}
 	cm, err := catalog.Start(ctx, catalog.Options{Env: env, Store: st, Log: log,
 		Mode: cfg.Catalog.Mode, File: file, Path: cfg.Path, WatchInterval: cfg.Catalog.WatchInterval,
 		PollInterval: cfg.Catalog.PollInterval, Publish: nb.PublishCatalogChanged, Observer: a.Metrics})
@@ -101,6 +110,20 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 	}
 	nb.OnReconnect(func() { cm.Changed(0, "reconnect") })
 	cm.Changed(0, "start") // a change between the first load and the subscription
+
+	runCtx, stop := context.WithCancel(context.Background())
+	a.stop = stop
+	if sync != nil {
+		if err := sync.Watch(runCtx, func(ev provider.AccountEvent) { applyAccountState(a.Catalog.Router(), ev) }); err != nil {
+			stop()
+			return nil, fmt.Errorf("watch account state: %w", err)
+		}
+		nb.OnReconnect(func() { // our rests may not have reached the bucket while away
+			for _, ev := range restingAccounts(a.Catalog.Router()) {
+				sync.Publish(ev)
+			}
+		})
+	}
 
 	a.Recorder = metering.NewRecorder(cfg.Metering, log, a.Metrics, metering.StoreSink{Store: st}, nb.UsageSink())
 
@@ -124,20 +147,41 @@ func New(ctx context.Context, cfg *config.Config, st store.Store, nb *bus.Bus, l
 	a.Public, a.Anthropic = a.Metrics.Wrap("public", gw.Routes()), a.Metrics.Wrap("anthropic", gw.AnthropicRoutes())
 	if cfg.Admin.Enabled() {
 		if err := a.bootstrapAdmin(ctx, cfg.Admin, log); err != nil {
+			stop()
 			return nil, err
 		}
 		ips, err := clientip.New(cfg.Server.TrustedProxies, cfg.Server.ClientIPHeader)
 		if err != nil {
+			stop()
 			return nil, err
 		}
 		a.Admin = admin.New(admin.Options{Keys: a.Keys, Auth: a.Auth, Store: st, Router: a.Catalog, Public: a.Public,
 			MasterKey: cfg.Admin.MasterKey, CookieSecure: cfg.Admin.CookieSecure, UIDir: cfg.Admin.UIDir,
 			ClientIP: ips, NodeID: nb.NodeID, Log: log}).Routes()
 	}
-	runCtx, stop := context.WithCancel(context.Background())
-	a.stop = stop
 	go cm.Run(runCtx)
 	return a, nil
+}
+
+// applyAccountState gives one account's state from another node to its pool.
+func applyAccountState(rt *router.Router, ev provider.AccountEvent) {
+	if p, ok := rt.Provider(ev.Provider); ok {
+		if pool, ok := provider.AsPool(p); ok {
+			pool.Apply(ev)
+		}
+	}
+}
+
+// restingAccounts lists every account that rests now, on this node.
+func restingAccounts(rt *router.Router) []provider.AccountEvent {
+	var out []provider.AccountEvent
+	for _, name := range rt.Providers() {
+		p, _ := rt.Provider(name)
+		if pool, ok := provider.AsPool(p); ok {
+			out = append(out, pool.Resting()...)
+		}
+	}
+	return out
 }
 
 // accountStates lists every provider account of the current snapshot and whether it rests.

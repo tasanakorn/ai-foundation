@@ -166,7 +166,13 @@ type NATS struct {
 	ConnectTimeout time.Duration `yaml:"connect_timeout"`
 	Usage          NATSUsage     `yaml:"usage"`
 	Control        NATSControl   `yaml:"control"`
+	State          NATSState     `yaml:"state"`
 	Hooks          Hooks         `yaml:"hooks"`
+}
+
+// NATSState is where nodes share provider account state (spec-0004 section 4.4, D40).
+type NATSState struct {
+	Bucket string `yaml:"bucket"` // JetStream KV bucket; default AIF_ACCOUNT_STATE
 }
 
 type NATSUsage struct {
@@ -551,6 +557,9 @@ func (c *Config) applyDefaults() {
 	}
 	if n.Control.SubjectPrefix == "" {
 		n.Control.SubjectPrefix = "aif.control.v1"
+	}
+	if n.State.Bucket == "" {
+		n.State.Bucket = "AIF_ACCOUNT_STATE"
 	}
 	if n.Hooks.PreRequest.Timeout == 0 {
 		n.Hooks.PreRequest.Timeout = 200 * time.Millisecond
