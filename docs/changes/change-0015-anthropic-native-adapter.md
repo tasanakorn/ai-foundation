@@ -1,6 +1,6 @@
 # change-0015: Native Anthropic adapter for OpenAI-format clients
 
-- Status: draft
+- Status: applied (on merge of its pull request)
 - Date: 2026-11-28
 - Related: [task-0009](../tasks/task-0009-anthropic-native-adapter.md); [spec-0002](../specs/spec-0002-anthropic-api-and-credits.md) sections 5, 7, D44 and D45; [backlog-0004](../backlogs/backlog-0004-native-provider-adapters.md) item 1.1
 
@@ -38,4 +38,11 @@
 ## 5. Roll back
 
 1. Set the providers back to `openai_format: compat` and go back to v0.6.0.
-2. An older binary refuses a database at schema v10. Undo v10 by hand first: `ALTER TABLE catalog_providers DROP COLUMN prompt_cache; DELETE FROM schema_migrations WHERE version = 10;`
+2. An older binary refuses a database at schema v10. Undo v10 by hand first (tested in `TestRollbackV10`); the `prompt_cache` settings are lost:
+
+   ```sql
+   BEGIN;
+   ALTER TABLE catalog_providers DROP COLUMN prompt_cache;
+   DELETE FROM schema_migrations WHERE version = 10;
+   COMMIT;
+   ```

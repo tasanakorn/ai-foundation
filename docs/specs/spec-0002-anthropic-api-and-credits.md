@@ -1,6 +1,6 @@
 # spec-0002: Anthropic API, plan credits and Messages API inbound
 
-- Status: draft
+- Status: built (tasks 0007-0010)
 - Owner: project owner
 - Related: [product](../products/ai-foundation.md); [spec-0001](spec-0001-gateway-core-architecture.md) sections 5, 7, 8.1, 9; [backlog-0004](../backlogs/backlog-0004-native-provider-adapters.md) items 1.1, 1.3, 2; tasks [task-0007](../tasks/task-0007-anthropic-provider-type.md), [task-0008](../tasks/task-0008-anthropic-messages-api.md), [task-0009](../tasks/task-0009-anthropic-native-adapter.md), [task-0010](../tasks/task-0010-anthropic-credit-awareness.md)
 

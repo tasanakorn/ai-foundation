@@ -6,6 +6,18 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+Native Anthropic adapter for OpenAI-format clients (change-0015). Upgrade notes: migration v10 runs at startup and only adds a column; going back needs the manual SQL in change-0015 section 5. `compat` providers work as before.
+
+### Added
+
+1. `openai_format: native` on `anthropic` providers (change-0015, spec-0002 section 7): `/v1/chat/completions` is translated to the Messages API and back, for normal and stream responses. Upstream errors keep their status, in the OpenAI error shape. Fields it cannot carry (`n` above 1, `logprobs`, `response_format: json_object`, audio or file input) get a `400` from the gateway; `/v1/completions` and `/v1/embeddings` get `400 unsupported_endpoint`.
+2. Prompt caching for OpenAI-format requests on a `native` provider: `prompt_cache: auto` (default) or `off`.
+3. `usage.prompt_tokens_details.cache_write_tokens` in `native` responses. Cache reads and writes from `/v1` are now recorded and priced, also from OpenRouter when it sends them.
+
+### Changed
+
+1. The example config uses `openai_format: native`.
+
 ## [0.6.0] - 2026-11-27
 
 OIDC-only sign-in and auto redirect (change-0014). Upgrade notes: **breaking**. No database migration. With any provider in `admin.oidc.providers`, the local account can no longer sign in with its password. Before upgrading, make sure another active `admin` account is linked to the IdP. When the IdP is down, remove `admin.oidc` and restart to use the local account. Going back to 0.5.0 needs no data change.
