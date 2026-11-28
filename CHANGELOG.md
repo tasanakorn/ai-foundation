@@ -6,6 +6,8 @@ There is no prebuilt image or binary: build from the tag (README section 6).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-28
+
 Native Anthropic adapter for OpenAI-format clients (change-0015). Upgrade notes: migration v10 runs at startup and only adds a column; going back needs the manual SQL in change-0015 section 5. `compat` providers work as before.
 
 ### Added
@@ -102,6 +104,7 @@ First tagged release.
    2. Prometheus metrics on their own listener (`metrics.listen`, default off).
    3. The public dev secrets are refused at startup unless `dev_mode: true`.
 
+[0.7.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.7.0
 [0.6.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.6.0
 [0.5.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.5.0
 [0.4.0]: https://github.com/tasanakorn/ai-foundation/releases/tag/v0.4.0

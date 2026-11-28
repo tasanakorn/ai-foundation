@@ -1,6 +1,6 @@
 # change-0015: Native Anthropic adapter for OpenAI-format clients
 
-- Status: applied (on merge of its pull request)
+- Status: applied (released in v0.7.0)
 - Date: 2026-11-28
 - Related: [task-0009](../tasks/task-0009-anthropic-native-adapter.md); [spec-0002](../specs/spec-0002-anthropic-api-and-credits.md) sections 5, 7, D44 and D45; [backlog-0004](../backlogs/backlog-0004-native-provider-adapters.md) item 1.1
 

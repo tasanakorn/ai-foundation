@@ -26,7 +26,7 @@
 3. `prompt_cache: auto | off` (config, catalog, export, migration v10). `auto` sends the top-level `cache_control: {type: "ephemeral"}`. Config errors for an unknown value, for `prompt_cache` with `compat`, and on other provider types.
 4. Metering: the translated usage has `prompt_tokens_details.cache_write_tokens`; `metering.Apply` now records and prices it for every OpenAI-format response.
 5. Tests: request and response translation tables, stream translation (thinking, text, tool calls, cut stream, error event), fake upstream (`TestNativeDo`, `TestAnthropicNativeChatCompletions` with the usage record and cost), config checks, `TestRollbackV10`.
-6. Not done: no test against the real Anthropic API yet. Points to check there: a tool-use conversation on a model that always thinks (the thinking blocks are not sent back), and the default `max_tokens` of 16000.
+6. Tested against the real Anthropic API on 2026-11-28 (a temporary test, not kept): normal and stream chat on `claude-haiku-5-5`; a two-turn tool-use conversation on `claude-sonnet-5-5` and `claude-opus-5-5`, normal and stream, works without sending thinking blocks back; prompt caching wrote then read 15,323 tokens; `temperature: 0.5` and `tool_choice: required` came back as Anthropic's 400 in OpenAI shape (D45); no `max_tokens` works with the default 16000.
 7. The local dev config (`gateway/aif.dev.yaml`) still uses `compat`; only the example config was switched, as the spec says.
 
 ## Verification
