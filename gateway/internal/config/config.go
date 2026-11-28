@@ -258,7 +258,8 @@ type Provider struct {
 
 	// Anthropic only (spec-0002 section 5).
 	WorkspaceID  string `yaml:"workspace_id"`  // sent as anthropic-workspace-id; only for keys not scoped to one workspace
-	OpenAIFormat string `yaml:"openai_format"` // required: how OpenAI-format requests reach Anthropic (compat)
+	OpenAIFormat string `yaml:"openai_format"` // required: how OpenAI-format requests reach Anthropic (compat or native)
+	PromptCache  string `yaml:"prompt_cache"`  // native only: auto (default) or off (spec-0002 section 7.3)
 
 	// Several accounts (keys) and how one is picked per request (spec-0004).
 	// A provider has api_key or accounts, not both; api_key is one account named "default".
@@ -387,9 +388,24 @@ const (
 	TypeAnthropic  = "anthropic"
 )
 
-// OpenAIFormatCompat sends OpenAI-format requests to Anthropic's OpenAI-compatible endpoint.
-// "native" (gateway-side translation) arrives with task-0009.
-const OpenAIFormatCompat = "compat"
+// How OpenAI-format requests reach an anthropic provider (spec-0002 sections 5 and 7).
+const (
+	// OpenAIFormatCompat sends them to Anthropic's OpenAI-compatible endpoint.
+	OpenAIFormatCompat = "compat"
+	// OpenAIFormatNative translates them to the Messages API in the gateway.
+	OpenAIFormatNative = "native"
+)
+
+// Prompt cache modes of a native anthropic provider.
+const (
+	PromptCacheAuto = "auto"
+	PromptCacheOff  = "off"
+)
+
+// PromptCacheOn says whether OpenAI-format requests get prompt caching (native only).
+func (p Provider) PromptCacheOn() bool {
+	return p.OpenAIFormat == OpenAIFormatNative && p.PromptCache != PromptCacheOff
+}
 
 // Model is a client-facing alias. It has targets (spec-0005), or the short form
 // provider + upstream + price, which is one target. NormalizeCatalog turns the short
@@ -1064,21 +1080,25 @@ func (p Provider) validateAccounts() error {
 
 func (p Provider) validateAnthropic() error {
 	if p.Type != TypeAnthropic {
-		if p.OpenAIFormat != "" || p.WorkspaceID != "" {
-			return fmt.Errorf("provider %q: openai_format and workspace_id are only for type anthropic", p.Name)
+		if p.OpenAIFormat != "" || p.WorkspaceID != "" || p.PromptCache != "" {
+			return fmt.Errorf("provider %q: openai_format, prompt_cache and workspace_id are only for type anthropic", p.Name)
 		}
 		return nil
 	}
 	switch p.OpenAIFormat {
-	case OpenAIFormatCompat:
-		return nil
+	case OpenAIFormatCompat, OpenAIFormatNative:
 	case "":
-		return fmt.Errorf("provider %q: openai_format is required for type anthropic (use %q: Anthropic's OpenAI-compatible endpoint)", p.Name, OpenAIFormatCompat)
-	case "native":
-		return fmt.Errorf("provider %q: openai_format native is not available yet; use %q", p.Name, OpenAIFormatCompat)
+		return fmt.Errorf("provider %q: openai_format is required for type anthropic (use %q: the gateway translates to the Messages API, or %q: Anthropic's OpenAI-compatible endpoint)", p.Name, OpenAIFormatNative, OpenAIFormatCompat)
 	default:
-		return fmt.Errorf("provider %q: openai_format %q is not supported (use %q)", p.Name, p.OpenAIFormat, OpenAIFormatCompat)
+		return fmt.Errorf("provider %q: openai_format %q is not supported (use %q or %q)", p.Name, p.OpenAIFormat, OpenAIFormatNative, OpenAIFormatCompat)
 	}
+	switch {
+	case p.PromptCache != "" && p.PromptCache != PromptCacheAuto && p.PromptCache != PromptCacheOff:
+		return fmt.Errorf("provider %q: prompt_cache %q is not supported (use %q or %q)", p.Name, p.PromptCache, PromptCacheAuto, PromptCacheOff)
+	case p.PromptCache != "" && p.OpenAIFormat != OpenAIFormatNative:
+		return fmt.Errorf("provider %q: prompt_cache needs openai_format %q (the compat endpoint has no prompt caching)", p.Name, OpenAIFormatNative)
+	}
+	return nil
 }
 
 func (a AnthropicServer) validate() error {

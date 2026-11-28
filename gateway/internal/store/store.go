@@ -191,6 +191,7 @@ type CatalogProvider struct {
 	Headers      map[string]string `json:"headers"`
 	WorkspaceID  string            `json:"workspace_id"`
 	OpenAIFormat string            `json:"openai_format"`
+	PromptCache  string            `json:"prompt_cache"`
 	Accounts     []CatalogAccount  `json:"accounts"`
 	// Account selection (spec-0004); empty or zero = the default.
 	Policy      string        `json:"policy"`

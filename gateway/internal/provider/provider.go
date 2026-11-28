@@ -8,6 +8,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -140,7 +141,8 @@ func (p *OpenAI) Do(ctx context.Context, endpoint string, body []byte) (*http.Re
 
 // Anthropic is the Claude API (spec-0002 section 5). With openai_format "compat", OpenAI-format
 // requests go to Anthropic's OpenAI-compatible endpoint (base_url + endpoint), so the body passes
-// through as for any OpenAI-compatible provider. Auth uses x-api-key, never Authorization.
+// through as for any OpenAI-compatible provider. With "native", the gateway translates them to
+// the Messages API and back (section 7). Auth uses x-api-key, never Authorization.
 type Anthropic struct {
 	name        string
 	baseURL     string
@@ -148,16 +150,39 @@ type Anthropic struct {
 	workspaceID string
 	headers     map[string]string
 	client      *http.Client
+	native      bool // openai_format native
+	promptCache bool // native only: top-level cache_control
+	now         func() time.Time
 }
 
 func NewAnthropic(c config.Provider, client *http.Client) *Anthropic {
-	return &Anthropic{name: c.Name, baseURL: c.BaseURL, apiKey: c.APIKey, workspaceID: c.WorkspaceID, headers: c.Headers, client: client}
+	return &Anthropic{name: c.Name, baseURL: c.BaseURL, apiKey: c.APIKey, workspaceID: c.WorkspaceID, headers: c.Headers, client: client,
+		native: c.OpenAIFormat == config.OpenAIFormatNative, promptCache: c.PromptCacheOn(), now: time.Now}
 }
 
 func (p *Anthropic) Name() string { return p.name }
 
 func (p *Anthropic) Do(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
-	return p.Native(ctx, http.MethodPost, endpoint, "", nil, body)
+	if !p.native {
+		return p.Native(ctx, http.MethodPost, endpoint, "", nil, body)
+	}
+	if endpoint != "/chat/completions" {
+		return gatewayError(http.StatusBadRequest, "unsupported_endpoint", endpoint+" is not available for this model (Anthropic has only chat completions)"), nil
+	}
+	out, stream, err := toMessages(body, p.promptCache)
+	if err != nil {
+		var bad *badRequest
+		if errors.As(err, &bad) {
+			return gatewayError(http.StatusBadRequest, bad.code, bad.msg), nil
+		}
+		return nil, err
+	}
+	h := http.Header{"Anthropic-Version": {anthropicVersion}}
+	resp, err := p.Native(ctx, http.MethodPost, "/messages", "", h, out)
+	if err != nil {
+		return nil, err
+	}
+	return fromMessagesResponse(resp, stream, p.now), nil
 }
 
 func (p *Anthropic) NativeFormat() string { return config.FormatAnthropic }

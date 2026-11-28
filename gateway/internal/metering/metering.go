@@ -12,13 +12,15 @@ import (
 	"ai-foundation/gateway/internal/store"
 )
 
-// Usage is the OpenAI "usage" object, plus OpenRouter's optional "cost" (USD).
+// Usage is the OpenAI "usage" object, plus OpenRouter's optional "cost" (USD) and
+// "cache_write_tokens" (also sent by the native Anthropic adapter, spec-0002 section 7.4).
 type Usage struct {
 	PromptTokens        int64 `json:"prompt_tokens"`
 	CompletionTokens    int64 `json:"completion_tokens"`
 	TotalTokens         int64 `json:"total_tokens"`
 	PromptTokensDetails *struct {
-		CachedTokens int64 `json:"cached_tokens"`
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails *struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
@@ -37,6 +39,7 @@ func Apply(rec *store.UsageRecord, u *Usage, price *config.Price) {
 	}
 	if u.PromptTokensDetails != nil {
 		rec.CachedTokens = u.PromptTokensDetails.CachedTokens
+		rec.CacheWriteTokens = u.PromptTokensDetails.CacheWriteTokens
 	}
 	if u.CompletionTokensDetails != nil {
 		rec.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
@@ -44,7 +47,7 @@ func Apply(rec *store.UsageRecord, u *Usage, price *config.Price) {
 	if u.Cost != nil {
 		rec.CostUSD = *u.Cost
 	} else {
-		rec.CostUSD = Cost(price, rec.PromptTokens, rec.CachedTokens, 0, rec.CompletionTokens)
+		rec.CostUSD = Cost(price, rec.PromptTokens, rec.CachedTokens, rec.CacheWriteTokens, rec.CompletionTokens)
 	}
 }
 

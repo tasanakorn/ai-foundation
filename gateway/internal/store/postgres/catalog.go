@@ -96,7 +96,7 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 	}
 	c.UpdatedAt = c.UpdatedAt.UTC()
 
-	rows, err := q.Query(ctx, `SELECT name, type, base_url, headers, workspace_id, openai_format, policy, sticky, max_attempts, cooldown_ms FROM catalog_providers ORDER BY position`)
+	rows, err := q.Query(ctx, `SELECT name, type, base_url, headers, workspace_id, openai_format, prompt_cache, policy, sticky, max_attempts, cooldown_ms FROM catalog_providers ORDER BY position`)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func readCatalog(ctx context.Context, q querier, lock bool) (*store.Catalog, err
 		var p store.CatalogProvider
 		var headers []byte
 		var cooldownMS int64
-		if err := rows.Scan(&p.Name, &p.Type, &p.BaseURL, &headers, &p.WorkspaceID, &p.OpenAIFormat, &p.Policy, &p.Sticky, &p.MaxAttempts, &cooldownMS); err != nil {
+		if err := rows.Scan(&p.Name, &p.Type, &p.BaseURL, &headers, &p.WorkspaceID, &p.OpenAIFormat, &p.PromptCache, &p.Policy, &p.Sticky, &p.MaxAttempts, &cooldownMS); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -216,9 +216,9 @@ func writeCatalog(ctx context.Context, tx pgx.Tx, c *store.Catalog) error {
 	b := &pgx.Batch{}
 	for i, p := range c.Providers {
 		headers, _ := json.Marshal(nonNilMap(p.Headers))
-		b.Queue(`INSERT INTO catalog_providers (name, position, type, base_url, headers, workspace_id, openai_format, policy, sticky, max_attempts, cooldown_ms)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-			p.Name, i, p.Type, p.BaseURL, headers, p.WorkspaceID, p.OpenAIFormat, p.Policy, p.Sticky, p.MaxAttempts, p.Cooldown.Milliseconds())
+		b.Queue(`INSERT INTO catalog_providers (name, position, type, base_url, headers, workspace_id, openai_format, prompt_cache, policy, sticky, max_attempts, cooldown_ms)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			p.Name, i, p.Type, p.BaseURL, headers, p.WorkspaceID, p.OpenAIFormat, p.PromptCache, p.Policy, p.Sticky, p.MaxAttempts, p.Cooldown.Milliseconds())
 		for j, a := range p.Accounts {
 			ah, _ := json.Marshal(nonNilMap(a.Headers))
 			var cr store.Credit
