@@ -470,4 +470,3 @@ func TestRollbackV10(t *testing.T) {
 		t.Fatalf("after migrating again: %+v %v", got, err)
 	}
 }
-
