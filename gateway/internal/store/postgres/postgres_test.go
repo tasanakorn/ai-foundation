@@ -341,8 +341,11 @@ func TestRollbackV9(t *testing.T) {
 	if err := s.CreateAdminIdentity(ctx, &store.AdminIdentity{ID: "idn_1", UserID: u.ID, Issuer: "https://i", Subject: "s", CreatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.pool.Exec(ctx, rollbackV9); err != nil {
-		t.Fatalf("roll back: %v", err)
+	// Roll backs run newest first: v10, then v9.
+	for _, sql := range []string{rollbackV10, rollbackV9} {
+		if _, err := s.pool.Exec(ctx, sql); err != nil {
+			t.Fatalf("roll back: %v", err)
+		}
 	}
 	var v int
 	if err := s.pool.QueryRow(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil || v != 8 {
@@ -421,5 +424,49 @@ func TestOIDCLinksAndFlows(t *testing.T) {
 	_ = s.CreateOIDCFlow(ctx, &store.OIDCFlow{IDHash: "h2", Provider: "sso", ExpiresAt: now.Add(time.Minute)})
 	if _, err := s.TakeOIDCFlow(ctx, "h2", now.Add(2*time.Minute)); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("take expired: %v", err)
+	}
+}
+
+// rollbackV10 is the manual roll back of migration v10 in change-0015 section 5. Keep the two
+// in step.
+const rollbackV10 = `
+BEGIN;
+ALTER TABLE catalog_providers DROP COLUMN prompt_cache;
+DELETE FROM schema_migrations WHERE version = 10;
+COMMIT;`
+
+func TestRollbackV10(t *testing.T) {
+	t.Parallel()
+	url := pgtest.URL(t)
+	ctx := context.Background()
+	s, err := Open(ctx, url, Options{MaxConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := &store.Catalog{Providers: []store.CatalogProvider{{Name: "a", Type: "anthropic", OpenAIFormat: "native", PromptCache: "off",
+		Headers: map[string]string{}, Accounts: []store.CatalogAccount{{Name: "default", KeyRef: "env:K"}}}}, Models: []store.CatalogModel{}}
+	if _, err := s.UpdateCatalog(ctx, 0, "test", "seed", func(c *store.Catalog) error { *c = *cat; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.GetCatalog(ctx); err != nil || got.Providers[0].PromptCache != "off" {
+		t.Fatalf("prompt_cache not stored: %+v %v", got, err)
+	}
+	if _, err := s.pool.Exec(ctx, rollbackV10); err != nil {
+		t.Fatalf("roll back: %v", err)
+	}
+	var v int
+	if err := s.pool.QueryRow(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&v); err != nil || v != 9 {
+		t.Fatalf("version after roll back: %d %v", v, err)
+	}
+	s.Close()
+	// The provider is still there, and the migration runs again on the next start.
+	s, err = Open(ctx, url, Options{MaxConns: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.GetCatalog(ctx)
+	if err != nil || len(got.Providers) != 1 || got.Providers[0].OpenAIFormat != "native" || got.Providers[0].PromptCache != "" {
+		t.Fatalf("after migrating again: %+v %v", got, err)
 	}
 }

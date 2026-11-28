@@ -263,6 +263,10 @@ var migrations = []string{
 		expires_at    timestamptz NOT NULL
 	);
 	CREATE INDEX idx_admin_oidc_flows_expires ON admin_oidc_flows (expires_at);`,
+
+	// v10: prompt caching for OpenAI-format requests to a native anthropic provider
+	// (change-0015, spec-0002 section 7.3).
+	`ALTER TABLE catalog_providers ADD COLUMN prompt_cache text NOT NULL DEFAULT '';`,
 }
 
 // migrationLock is a constant key for pg_advisory_xact_lock. Several nodes may start

@@ -29,6 +29,7 @@ type exportProvider struct {
 	Headers      map[string]string `yaml:"headers,omitempty"`
 	WorkspaceID  string            `yaml:"workspace_id,omitempty"`
 	OpenAIFormat string            `yaml:"openai_format,omitempty"`
+	PromptCache  string            `yaml:"prompt_cache,omitempty"`
 	Policy       string            `yaml:"policy,omitempty"`
 	Sticky       string            `yaml:"sticky,omitempty"`
 	MaxAttempts  int               `yaml:"max_attempts,omitempty"`
@@ -112,7 +113,7 @@ func Export(c *store.Catalog) ([]byte, error) {
 	var encrypted []string
 	for _, p := range c.Providers {
 		ep := exportProvider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: p.Headers,
-			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat, MaxAttempts: p.MaxAttempts}
+			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat, PromptCache: p.PromptCache, MaxAttempts: p.MaxAttempts}
 		// Defaults stay out, so a plain provider exports as plain as it was written.
 		if p.Policy != config.PolicyPriority {
 			ep.Policy = p.Policy

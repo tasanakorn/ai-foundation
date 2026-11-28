@@ -126,7 +126,9 @@ providers:
   - name: anthropic
     type: anthropic              # base_url defaults to https://api.anthropic.com/v1
     api_key: ${ANTHROPIC_API_KEY}
-    openai_format: compat        # required: OpenAI-format requests use Anthropic's OpenAI-compatible endpoint
+    openai_format: native        # required: native = the gateway translates /v1 requests to the Messages API;
+                                 # compat = Anthropic's OpenAI-compatible endpoint (no prompt caching)
+    # prompt_cache: "off"        # native only: auto (default) caches the prompt for 5 minutes
     # workspace_id: wrkspc_...   # only for keys not scoped to one workspace
     # Several accounts (docs/specs/spec-0004): use accounts instead of api_key.
     # policy: priority (default; spend in this order) or round_robin (spread by weight).
@@ -173,7 +175,7 @@ models:
     price: { input: 0.15, output: 0.60, cached_input: 0.075 }
 
   # Claude: keep alias = real model ID (Claude Code drops IDs without "claude").
-  # On /v1, compat mode does not report cached tokens; on /anthropic, cache reads and writes are metered.
+  # Cache reads and writes are metered on /anthropic, and on /v1 with openai_format: native.
   - name: claude-opus-5-5
     provider: anthropic
     price: { input: 4.00, output: 20.00, cached_input: 0.20 }

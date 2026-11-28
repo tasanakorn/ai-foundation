@@ -1,6 +1,6 @@
 # spec-0002: Anthropic API, plan credits and Messages API inbound
 
-- Status: draft
+- Status: built (tasks 0007-0010)
 - Owner: project owner
 - Related: [product](../products/ai-foundation.md); [spec-0001](spec-0001-gateway-core-architecture.md) sections 5, 7, 8.1, 9; [backlog-0004](../backlogs/backlog-0004-native-provider-adapters.md) items 1.1, 1.3, 2; tasks [task-0007](../tasks/task-0007-anthropic-provider-type.md), [task-0008](../tasks/task-0008-anthropic-messages-api.md), [task-0009](../tasks/task-0009-anthropic-native-adapter.md), [task-0010](../tasks/task-0010-anthropic-credit-awareness.md)
 
@@ -105,6 +105,7 @@ Source: [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway), 
    2. Auth to Anthropic: `x-api-key: <api_key>`.
    3. Optional `workspace_id`, sent as `anthropic-workspace-id`. Needed only for keys not scoped to one workspace.
    4. Required `openai_format: compat | native`: how OpenAI-format requests reach this provider. The gateway refuses to start without it (D19).
+   5. `prompt_cache: auto | off` (default `auto`): prompt caching for OpenAI-format requests. Only with `openai_format: native` (section 7.3).
 2. `openai_format: compat`: `/v1/chat/completions` goes to Anthropic's OpenAI-compatible endpoint.
    1. Limits ([OpenAI SDK compatibility](https://platform.claude.com/docs/en/api/openai-sdk)): Anthropic calls it "not considered a long-term or production-ready solution for most use cases"; no prompt caching; no thinking text; `strict` ignored; `response_format` only `json_schema` with `strict: true`; `temperature` below 1 and non-default `top_p` return 400 on Claude 4.7 and later; `usage.prompt_tokens_details` is always empty, so cached tokens are not metered.
 3. `openai_format: native`: section 7.
@@ -149,12 +150,42 @@ Source: [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway), 
 
 ## 7. Native adapter for OpenAI-format clients
 
-1. With `openai_format: native`, `/v1/chat/completions` to an `anthropic` provider is translated inside `Do` to `POST /v1/messages`, as `provider.go` already plans.
-   1. Request: system hoisting, tools, images, `max_tokens`. Fields current models refuse (`temperature`, `top_p`, forced `tool_choice`) get a clear 400 from the gateway.
-   2. Response and SSE stream back to OpenAI chat format, with `usage` in the last chunk. `stop_reason: refusal` -> `finish_reason: content_filter`.
-   3. Prompt caching on by default: top-level `cache_control: {type: "ephemeral"}`. Provider config `prompt_cache: auto | off`.
-2. Use the official Go SDK (`github.com/anthropics/anthropic-sdk-go`) for request and stream types.
-3. The example config switches to `openai_format: native` once this ships.
+1. With `openai_format: native`, `POST /v1/chat/completions` to an `anthropic` provider is translated inside `Do` to `POST /v1/messages` with `anthropic-version: 2023-06-01`, and the answer is translated back. The pool, failover and metering see an OpenAI-format response, as with any other provider.
+2. Request mapping (OpenAI -> Messages)
+
+   | OpenAI field                                   | Messages API                                                                                           |
+   | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+   | `system` and `developer` messages (anywhere)   | top-level `system` text blocks, in order                                                               |
+   | `user` text and `image_url` parts              | `text` and `image` blocks; a `data:` URL becomes a `base64` source, other URLs a `url` source          |
+   | `assistant` content and `tool_calls`           | `text` and `tool_use` blocks (`arguments` must be JSON)                                                |
+   | `tool` messages                                | `tool_result` blocks in one `user` message; following user text goes after them                        |
+   | `max_completion_tokens`, else `max_tokens`     | `max_tokens`; default 16000 when the client sends none                                                 |
+   | `stop`                                         | `stop_sequences`                                                                                       |
+   | `temperature`, `top_p`                         | passed as is (D45)                                                                                     |
+   | `tools[].function`                             | `tools[]`: `name`, `description`, `input_schema` (`parameters`, unchanged), `strict`                   |
+   | `tool_choice` `auto`, `none`, `required`, name | `auto`, `none`, `any`, `tool` (D45)                                                                    |
+   | `parallel_tool_calls: false`                   | `tool_choice.disable_parallel_tool_use: true`                                                          |
+   | `response_format` `json_schema`                | `output_config.format: {type: json_schema, schema}`                                                    |
+   | `reasoning_effort`                             | `output_config.effort` (`minimal` -> `low`)                                                            |
+   | `user`                                         | `metadata.user_id`                                                                                     |
+   | `stream`                                       | `stream`                                                                                               |
+
+   1. Ignored, as Anthropic's compat layer does: `seed`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `store`, `metadata`, `service_tier`, `prediction`, `stream_options`, message `name`, image `detail`.
+   2. A gateway 400 (`invalid_request_error`, OpenAI shape): `n` other than 1; `logprobs: true`; `response_format: json_object`; audio or file input; `modalities` with audio; the old `functions` and `function` role; a `tool_calls[].function.arguments` that is not JSON.
+3. Prompt caching: with `prompt_cache: auto` (the default) the request gets the top-level `cache_control: {type: "ephemeral"}` (5-minute cache, placed on the last cacheable block by the API). `off` sends none.
+4. Response mapping (Messages -> OpenAI)
+   1. `text` blocks join into `message.content` (`null` when there is none). `tool_use` blocks become `tool_calls` (`arguments` = the JSON of `input`). Non-empty `thinking` text becomes `reasoning_content`. Other blocks are dropped.
+   2. `stop_reason`: `end_turn`, `stop_sequence`, `pause_turn` -> `stop`; `max_tokens`, `model_context_window_exceeded` -> `length`; `tool_use` -> `tool_calls`; `refusal` -> `content_filter`.
+   3. `usage` keeps the D20 meaning: `prompt_tokens` = input + cache read + cache write; `prompt_tokens_details.cached_tokens` = cache read; `prompt_tokens_details.cache_write_tokens` = cache write; `completion_tokens_details.reasoning_tokens` = thinking tokens.
+   4. `id` is the Anthropic message ID; `model` is what Anthropic returned.
+5. Stream mapping: each Anthropic event becomes zero or more `chat.completion.chunk` events.
+   1. `message_start` -> a chunk with `role: assistant`. `text_delta` -> `content`. `thinking_delta` -> `reasoning_content`. A `tool_use` block start -> a `tool_calls` entry with `id`, `name` and an index counted per tool call; `input_json_delta` -> more `arguments` for that index.
+   2. `message_stop` -> a chunk with `finish_reason`, then a chunk with empty `choices` and `usage` (always, as the gateway asks every stream for usage), then `data: [DONE]`.
+   3. An `error` event -> `data: {"error": {...}}` in the OpenAI shape, then the stream ends.
+6. Errors: an upstream error keeps its status and headers (`retry-after` and the rest), and its body becomes `{"error": {"message", "type", "code": null}}` with Anthropic's message and type. The pool still sees the text, so "credit balance" detection (section 8) works.
+7. `/v1/completions` and `/v1/embeddings` on a `native` provider: `400 unsupported_endpoint`.
+8. Thinking blocks are never sent back upstream: OpenAI-format history cannot carry their signatures. Reasoning is not kept between turns, the same as with `compat`.
+9. The example config uses `openai_format: native`.
 
 ## 8. Credit awareness
 
@@ -171,12 +202,14 @@ Source: [Claude Code LLM gateway](https://code.claude.com/docs/en/llm-gateway), 
 
 Numbers continue from spec-0001 section 9.
 
-| ID  | Decision                                              | Why                                                                                                                  |
-| --- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| D17 | Pattern 1 paths: `/v1` OpenAI, `/anthropic` Anthropic | Matches most providers and gateways; one shape per path; an ingress can split formats by path or by a dedicated port |
-| D18 | Per-model `formats`; lossy translation only by opt-in | One alias list per format; a later translation can never turn a 400 into a silent loss of features                   |
-| D19 | `openai_format` is required on `anthropic` providers  | Changing a default later would silently change results, errors and cost                                              |
-| D20 | Usage records use OpenAI token meaning                | One meaning for dashboards and cost across both formats                                                              |
+| ID  | Decision                                                                                    | Why                                                                                                                         |
+| --- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| D17 | Pattern 1 paths: `/v1` OpenAI, `/anthropic` Anthropic                                       | Matches most providers and gateways; one shape per path; an ingress can split formats by path or by a dedicated port        |
+| D18 | Per-model `formats`; lossy translation only by opt-in                                       | One alias list per format; a later translation can never turn a 400 into a silent loss of features                          |
+| D19 | `openai_format` is required on `anthropic` providers                                        | Changing a default later would silently change results, errors and cost                                                     |
+| D20 | Usage records use OpenAI token meaning                                                      | One meaning for dashboards and cost across both formats                                                                     |
+| D44 | The native adapter uses its own small JSON types, not the Anthropic Go SDK                  | No new dependencies; tool schemas and unknown values pass through unchanged; the pool needs the raw `*http.Response` anyway |
+| D45 | No model rules in the gateway: `temperature`, `top_p` and forced `tool_choice` pass through | Which models refuse them changes with each release; Anthropic's own 400 comes back in OpenAI shape with a clear message     |
 
 ## 10. Contract impact
 

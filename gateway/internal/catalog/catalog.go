@@ -92,7 +92,7 @@ func FromCatalogFile(cfg *config.CatalogOnly) (*store.Catalog, error) {
 			headers = map[string]string{}
 		}
 		sp := store.CatalogProvider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: headers,
-			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat, Accounts: []store.CatalogAccount{},
+			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat, PromptCache: p.PromptCache, Accounts: []store.CatalogAccount{},
 			Policy: p.Policy, Sticky: p.Sticky, MaxAttempts: p.MaxAttempts, Cooldown: p.Cooldown}
 		for _, a := range p.Accounts {
 			if a.KeyRef == "" && a.APIKey != "" {
@@ -273,7 +273,7 @@ func toConfig(c *store.Catalog, kr *Keyring, resolve bool) ([]config.Provider, [
 			return nil, nil, invalid("provider %q: needs at least one account", p.Name)
 		}
 		cp := config.Provider{Name: p.Name, Type: p.Type, BaseURL: p.BaseURL, Headers: copyMap(p.Headers),
-			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat,
+			WorkspaceID: p.WorkspaceID, OpenAIFormat: p.OpenAIFormat, PromptCache: p.PromptCache,
 			Policy: p.Policy, Sticky: p.Sticky, MaxAttempts: p.MaxAttempts, Cooldown: p.Cooldown}
 		for _, a := range p.Accounts {
 			if err := checkAccountKey(a); err != nil {

@@ -49,6 +49,26 @@ providers:
 	if p := cfg.Providers[1]; p.BaseURL != "http://127.0.0.1:9000/v1" {
 		t.Fatalf("custom base_url: %q", p.BaseURL)
 	}
+	if cfg.Providers[0].PromptCacheOn() {
+		t.Fatal("compat must not use prompt caching")
+	}
+}
+
+func TestAnthropicNativePromptCache(t *testing.T) {
+	cfg, err := Parse([]byte(`
+admin: { listen: "off" }
+database: { url: "postgres://x" }
+providers:
+  - { name: a, type: anthropic, openai_format: native }
+  - { name: b, type: anthropic, openai_format: native, prompt_cache: "off" }
+  - { name: c, type: anthropic, openai_format: native, prompt_cache: auto }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Providers[0].PromptCacheOn() || cfg.Providers[1].PromptCacheOn() || !cfg.Providers[2].PromptCacheOn() {
+		t.Fatalf("prompt cache: %v %v %v", cfg.Providers[0].PromptCacheOn(), cfg.Providers[1].PromptCacheOn(), cfg.Providers[2].PromptCacheOn())
+	}
 }
 
 func TestFormatsAndAnthropicServer(t *testing.T) {
@@ -185,7 +205,9 @@ func TestValidate(t *testing.T) {
 		"duplicate model":            db + "admin: {listen: \"off\"}\nproviders: [{name: p, base_url: http://x}]\nmodels: [{name: m, provider: p}, {name: m, provider: p}]",
 		"wildcard subject":           db + "admin: {listen: \"off\"}\nnats: {usage: {subject_prefix: \"aif.*\"}}",
 		"anthropic no openai_format": db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic}]",
-		"anthropic native (later)":   db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic, openai_format: native}]",
+		"bad prompt_cache":           db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic, openai_format: native, prompt_cache: always}]",
+		"prompt_cache with compat":   db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic, openai_format: compat, prompt_cache: auto}]",
+		"prompt_cache on openai":     db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x, prompt_cache: off}]",
 		"anthropic bad format":       db + "admin: {listen: \"off\"}\nproviders: [{name: a, type: anthropic, openai_format: magic}]",
 		"openai_format on openai":    db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x, openai_format: compat}]",
 		"workspace_id on openai":     db + "admin: {listen: \"off\"}\nproviders: [{name: o, base_url: http://x, workspace_id: w}]",

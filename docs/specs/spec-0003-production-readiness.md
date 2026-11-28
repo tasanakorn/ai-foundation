@@ -1,6 +1,6 @@
 # spec-0003: Production readiness
 
-- Status: draft
+- Status: built (tasks 0011-0014)
 - Owner: project owner
 - Related: [spec-0001](spec-0001-gateway-core-architecture.md) sections 6.1, 9, 10; tasks [task-0011](../tasks/task-0011-trusted-proxies.md), [task-0012](../tasks/task-0012-prometheus-metrics.md), [task-0013](../tasks/task-0013-refuse-dev-secrets.md), [task-0014](../tasks/task-0014-versioned-releases.md)
 

@@ -10,7 +10,7 @@
 | [task-0006](task-0006-chat-playground.md)            | Chat playground in the admin UI           | done   | 2026-11-11 |
 | [task-0007](task-0007-anthropic-provider-type.md)    | Anthropic provider type                   | done   | 2026-11-27 |
 | [task-0008](task-0008-anthropic-messages-api.md)     | Anthropic Messages API under /anthropic   | done   | 2026-11-27 |
-| [task-0009](task-0009-anthropic-native-adapter.md)   | Native Anthropic adapter (OpenAI clients) | todo   | 2026-11-27 |
+| [task-0009](task-0009-anthropic-native-adapter.md)   | Native Anthropic adapter (OpenAI clients) | done   | 2026-11-28 |
 | [task-0010](task-0010-anthropic-credit-awareness.md) | Credit awareness per account              | done   | 2026-11-27 |
 | [task-0011](task-0011-trusted-proxies.md)            | Trusted proxies and client IP             | done   | 2026-11-27 |
 | [task-0012](task-0012-prometheus-metrics.md)         | Prometheus metrics                        | done   | 2026-11-27 |

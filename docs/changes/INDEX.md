@@ -16,3 +16,4 @@
 | [change-0012](change-0012-shared-account-state.md)             | Shared account state across nodes    | applied | 2026-11-27 |
 | [change-0013](change-0013-oidc-admin-login.md)                 | OIDC admin login, one local account  | applied | 2026-11-27 |
 | [change-0014](change-0014-oidc-only-sign-in.md)                | OIDC-only sign-in, auto redirect     | applied | 2026-11-27 |
+| [change-0015](change-0015-anthropic-native-adapter.md)         | Native Anthropic adapter             | applied | 2026-11-28 |
