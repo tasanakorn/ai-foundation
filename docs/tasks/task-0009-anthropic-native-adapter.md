@@ -1,6 +1,7 @@
 # task-0009: Native Anthropic adapter for OpenAI-format clients
 
-- Status: todo
+- Status: doing
+- Change: [change-0015](../changes/change-0015-anthropic-native-adapter.md)
 - Spec: [spec-0002](../specs/spec-0002-anthropic-api-and-credits.md) section 7
 - Depends on: [task-0008](task-0008-anthropic-messages-api.md)
 - Done when: `openai_format: native` translates `/v1/chat/completions` to the Messages API and back (stream and non-stream), with prompt caching on and cache tokens metered.
